@@ -290,20 +290,22 @@ void zombieSynthDrawLFOPage() {
 // 5 vertical sliders: SAT DRV | SAT AMT | CHO RT | CHO DPT | CHO MIX
 // Divider line between SAT and CHO group at x=65.
 void zombieSynthDrawFXPage() {
-  drawVerticalSlider(5,   83, 58, 150, "SAT DRV", synthParams.fxSatDrive);
-  drawVerticalSlider(68,  83, 58, 150, "SAT AMT", synthParams.fxSatAmount);
+  // Sliders shortened to h=140 so the section labels below sit fully on the
+  // 240 px screen (was h=150 with labels at y=237, clipped off the bottom).
+  drawVerticalSlider(5,   83, 58, 140, "SAT DRV", synthParams.fxSatDrive);
+  drawVerticalSlider(68,  83, 58, 140, "SAT AMT", synthParams.fxSatAmount);
 
   // Visual divider between saturation and chorus sections
-  tft.drawLine(131, 86, 131, 230, THEME_TEXT_DIM);
+  tft.drawLine(131, 86, 131, 220, THEME_TEXT_DIM);
 
-  drawVerticalSlider(135, 83, 58, 150, "CHO RT",  synthParams.fxChorusRate);
-  drawVerticalSlider(198, 83, 58, 150, "CHO DPT", synthParams.fxChorusDepth);
-  drawVerticalSlider(261, 83, 56, 150, "CHO MIX", synthParams.fxChorusMix);
+  drawVerticalSlider(135, 83, 58, 140, "CHO RT",  synthParams.fxChorusRate);
+  drawVerticalSlider(198, 83, 58, 140, "CHO DPT", synthParams.fxChorusDepth);
+  drawVerticalSlider(261, 83, 56, 140, "CHO MIX", synthParams.fxChorusMix);
 
-  // Section labels
+  // Section labels (now fully visible: y=225 + 14 px font-2 = 239 < 240)
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-  tft.drawCentreString("SATURATION", 63, 237, 2);
-  tft.drawCentreString("CHORUS", 220, 237, 2);
+  tft.drawCentreString("SATURATION", 63, 225, 2);
+  tft.drawCentreString("CHORUS", 220, 225, 2);
 }
 
 // ─── Main draw ───────────────────────────────────────────────────────────────
@@ -420,11 +422,11 @@ void zombieSynthHandleTouch() {
       break;
     }
     case 5: { // FX page
-      if (handleSliderTouch(5,  83, 58, 150, synthParams.fxSatDrive))   { zombieSynth->setSaturationDrive(synthParams.fxSatDrive);   changed = true; }
-      if (handleSliderTouch(68, 83, 58, 150, synthParams.fxSatAmount))  { zombieSynth->setSaturationAmount(synthParams.fxSatAmount);  changed = true; }
-      if (handleSliderTouch(135,83, 58, 150, synthParams.fxChorusRate)) { zombieSynth->setChorusRate(synthParams.fxChorusRate);       changed = true; }
-      if (handleSliderTouch(198,83, 58, 150, synthParams.fxChorusDepth)){ zombieSynth->setChorusDepth(synthParams.fxChorusDepth);     changed = true; }
-      if (handleSliderTouch(261,83, 56, 150, synthParams.fxChorusMix))  { zombieSynth->setChorusMix(synthParams.fxChorusMix);         changed = true; }
+      if (handleSliderTouch(5,  83, 58, 140, synthParams.fxSatDrive))   { zombieSynth->setSaturationDrive(synthParams.fxSatDrive);   changed = true; }
+      if (handleSliderTouch(68, 83, 58, 140, synthParams.fxSatAmount))  { zombieSynth->setSaturationAmount(synthParams.fxSatAmount);  changed = true; }
+      if (handleSliderTouch(135,83, 58, 140, synthParams.fxChorusRate)) { zombieSynth->setChorusRate(synthParams.fxChorusRate);       changed = true; }
+      if (handleSliderTouch(198,83, 58, 140, synthParams.fxChorusDepth)){ zombieSynth->setChorusDepth(synthParams.fxChorusDepth);     changed = true; }
+      if (handleSliderTouch(261,83, 56, 140, synthParams.fxChorusMix))  { zombieSynth->setChorusMix(synthParams.fxChorusMix);         changed = true; }
       break;
     }
   }

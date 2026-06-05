@@ -40,6 +40,22 @@ static inline float fclamp(float v, float lo, float hi) {
     return fmaxf(lo, fminf(hi, v));
 }
 
+// ── State-variable filter stability bounds ───────────────────────────────────
+// Chamberlin SVF goes unstable as f → 2 and damping q → 0.  Keep a safety
+// margin so stacked voices (chords) can't self-oscillate into a screech.
+#define SVF_FMAX 1.85f   // max integrator coefficient (was 1.92, too close to edge)
+#define SVF_QMIN 0.06f   // min damping → caps maximum resonance (was 0.04)
+
+// ── Master soft-clipper (always on) ──────────────────────────────────────────
+// Cubic waveshaper: transparent below ~0.6, smooth knee, hard-bounded to ±1 at
+// |x| ≥ 1.5.  Replaces the old brick-wall fclamp on the output so that loud
+// chords compress gracefully instead of producing harsh digital clipping.
+static inline float softClip(float x) {
+    if (x >  1.5f) return  1.0f;
+    if (x < -1.5f) return -1.0f;
+    return x - 0.14814814814f * x * x * x;   // x - x^3/6.75
+}
+
 // ── Enumerations ──────────────────────────────────────────────────────────────
 enum WaveformType {
     WAVE_SAW,
@@ -194,12 +210,18 @@ struct Filter {
     float resonance;    // 0.0–1.0
     float lp, bp, hp;
     float f, q;
+    // Cached modulated coefficient (see processWithMod): avoids recomputing
+    // powf/sinf every sample while the filter envelope/LFO sweeps smoothly.
+    float _lastModC;
+    float _fModCache;
 
     void init(FilterType t, float freq, float res) {
         type      = t;
         cutoff    = constrain(freq, 0.0f, 1.0f);
         resonance = constrain(res,  0.0f, 1.0f);
         lp = bp = hp = 0.0f;
+        _lastModC  = -1.0f;   // sentinel forces first processWithMod to compute
+        _fModCache = 0.0f;
         updateCoefficients();
     }
 
@@ -208,9 +230,10 @@ struct Filter {
         // Gives perceptually even sweep across the audible spectrum.
         float fc = 20.0f * powf(1000.0f, cutoff);
         f = 2.0f * sinf(PI * fc / (float)SAMPLE_RATE);
-        f = constrain(f, 0.001f, 1.92f);  // stay well inside stability bound
-        // q: damping – 0.04 = high resonance, 1.0 = no resonance
-        q = constrain(1.0f - resonance * 0.96f, 0.04f, 1.0f);
+        f = constrain(f, 0.001f, SVF_FMAX);  // stay well inside stability bound
+        // q: damping – SVF_QMIN = max resonance, 1.0 = no resonance
+        q = constrain(1.0f - resonance * 0.94f, SVF_QMIN, 1.0f);
+        _lastModC = -1.0f;   // base moved → invalidate the modulated cache
     }
 
     void setCutoff(float freq) {
@@ -259,8 +282,17 @@ struct Filter {
             fMod = f;
         } else {
             float modCutoff = fclamp(cutoff + cutoffMod, 0.0f, 1.0f);
-            float fc   = 20.0f * powf(1000.0f, modCutoff);
-            fMod = fclamp(2.0f * sinf(PI * fc / (float)SAMPLE_RATE), 0.001f, 1.92f);
+            // Recompute the expensive powf/sinf coefficient only when the
+            // modulated cutoff actually moves by a perceptible amount.  During
+            // sustain and smooth envelope/LFO sweeps this collapses ~44 100
+            // transcendental calls/sec per voice down to a handful — the key
+            // fix for audio dropouts when several voices (chords) are active.
+            if (fabsf(modCutoff - _lastModC) > 0.0015f) {
+                float fc   = 20.0f * powf(1000.0f, modCutoff);
+                _fModCache = fclamp(2.0f * sinf(PI * fc / (float)SAMPLE_RATE), 0.001f, SVF_FMAX);
+                _lastModC  = modCutoff;
+            }
+            fMod = _fModCache;
         }
         lp += fMod * bp;
         hp  = input - lp - q * bp;
@@ -654,7 +686,7 @@ public:
         _mutex         = NULL;
         _lfoFilterMod  = 0.0f;
         _lfoAmpMod     = 0.0f;
-        _limiterOn     = false;
+        _limiterOn     = true;   // transparent peak control on by default
     }
 
     void init() {
@@ -1019,11 +1051,14 @@ public:
             float outL = mixL + (chL - monoMix) + dL;
             float outR = mixR + (chR - monoMix) + dR;
 
-            // Optional master limiter (selectable; soft-clip stage above is kept).
+            // Optional master limiter (selectable) tames sustained peaks.
             if (limiterOn) _limiter.process(outL, outR);
 
-            audioBuffer[i * 2]     = (int16_t)(fclamp(outL, -1.0f, 1.0f) * 32767.0f);
-            audioBuffer[i * 2 + 1] = (int16_t)(fclamp(outR, -1.0f, 1.0f) * 32767.0f);
+            // Always-on cubic soft-clip is the final safety net: it replaces the
+            // old brick-wall clamp so transients/chords saturate smoothly instead
+            // of producing harsh, glitchy digital clipping.
+            audioBuffer[i * 2]     = (int16_t)(softClip(outL) * 32767.0f);
+            audioBuffer[i * 2 + 1] = (int16_t)(softClip(outR) * 32767.0f);
         }
 
         size_t bytes_written;

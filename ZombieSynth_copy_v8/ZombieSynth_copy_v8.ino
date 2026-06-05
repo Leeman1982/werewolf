@@ -1,6 +1,24 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3
+ ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.1
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v3.1 Audio quality & reliability pass:
+ - Master output now uses an always-on cubic soft-clipper (replaces the
+   brick-wall clamp): loud chords saturate smoothly instead of producing
+   harsh, "gain-accumulating" digital clipping.
+ - Master limiter enabled by default for transparent peak control.
+ - Filter coefficient caching: powf/sinf in the modulated-cutoff path is
+   recomputed only when the modulated cutoff actually moves, eliminating
+   ~44 kHz transcendental calls/voice that starved Core-0 and caused
+   dropouts/glitches with several voices (chords) active.
+ - State-variable filter stability margin tightened (no runaway screech
+   at high cutoff + resonance).
+ - Chord pad: STRUM is now non-blocking (no delay() stalling MIDI/touch);
+   OCT/type changes re-voice the held chord cleanly instead of stacking
+   voices; all strummed notes are tracked so ALL-NOTES-OFF always silences.
+ - LFO pitch path no longer re-pitches every voice on every tick when idle.
+ - FX-page section labels no longer clipped off the bottom of the screen;
+   chord-pad chord label no longer overlaps the wordmark.
 
  v3 Features (on top of v2):
  - Band-limited wavetable oscillators (replaces polyBLEP)
@@ -328,10 +346,15 @@ void loop() {
 
     SynthEngine* synth = getZombieSynth();
     if (synth) {
+      // Tracks whether the pitch path is currently detuned, so we only re-pitch
+      // every active voice (a powf + per-voice loop) when it actually changes —
+      // not on every 5 ms tick while the LFO is off or targeting filter/amp.
+      static bool pitchModActive = false;
       float out = globalLFO.enabled ? globalLFO.output : 0.0f;
-      // Reset all LFO mod paths then apply only the active target
+      // Reset the cheap scalar mod paths then apply only the active target
       synth->setLFOFilterMod(0.0f);
       synth->setLFOAmpMod(0.0f);
+      bool pitchTarget = false;
       if (globalLFO.enabled && out != 0.0f) {
         switch (globalLFO.target) {
           case LFO_TARGET_FILTER:
@@ -345,11 +368,16 @@ void loop() {
           case LFO_TARGET_PITCH:
             // Vibrato: ±2 semitones at depth=1 (standard synth vibrato range)
             synth->setLFOPitch(out * 2.0f);
+            pitchModActive = true;
+            pitchTarget    = true;
             break;
         }
-      } else if (!globalLFO.enabled) {
-        // Reset pitch to base (no vibrato) when LFO off
+      }
+      // Snap pitch back to base exactly once when vibrato stops, instead of
+      // re-pitching every voice on every tick.
+      if (!pitchTarget && pitchModActive) {
         synth->setLFOPitch(0.0f);
+        pitchModActive = false;
       }
     }
   }

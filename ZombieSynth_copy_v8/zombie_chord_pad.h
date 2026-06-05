@@ -37,11 +37,22 @@ static int  chordTypeIdx     = 0;    // 0=MAJ
 static int  chordOctave      = 4;    // middle C octave
 static bool chordHoldMode    = false;
 static bool chordNeedsRedraw = true;
-static int  chordActiveNotes[5];
+static int  chordActiveNotes[12];   // up to 8 strummed notes + headroom
 static int  chordActiveCount = 0;
+
+// ── Non-blocking strum scheduler ─────────────────────────────────────────────
+// STRUM used to fire notes with blocking delay() inside the touch handler,
+// stalling MIDI/touch for ~200 ms.  Now notes are queued and released one per
+// tick from zombieChordUpdate().
+static int           chordStrumNotes[12];
+static int           chordStrumVels[12];
+static int           chordStrumCount = 0;
+static int           chordStrumIdx   = 0;
+static unsigned long chordStrumNextMs = 0;
 
 // ── Note management ──────────────────────────────────────────────────────────
 static void chordAllOff() {
+  chordStrumCount = chordStrumIdx = 0;   // cancel any in-flight strum
   SynthEngine* synth = getZombieSynth();
   if (!synth) return;
   for (int i = 0; i < chordActiveCount; i++) {
@@ -71,6 +82,15 @@ static void chordPlay(int root, int typeIdx) {
   }
 }
 
+// Re-voice the currently sounding chord after root/type/octave changes.  Always
+// stops the old notes first (even in HOLD mode) so voices never stack and
+// accumulate gain — the cause of the harsh, distorted retriggers.
+static void chordRetrigger() {
+  if (chordActiveCount == 0) return;
+  chordAllOff();
+  chordPlay(chordRootNote, chordTypeIdx);
+}
+
 // ── Draw ─────────────────────────────────────────────────────────────────────
 void zombieChordDraw() {
   if (!chordNeedsRedraw) return;
@@ -78,11 +98,12 @@ void zombieChordDraw() {
   // ── Header ────────────────────────────────────────────────────────────
   drawZombiHeader("CHORD PAD");
 
-  // Current chord label (top-right)
+  // Current chord label — right-aligned on the subtitle line so it doesn't
+  // collide with the centred "ZOMBI SS" wordmark (was font-4 at y=8).
   char cname[16];
   snprintf(cname, sizeof(cname), "%s %s", rootNoteNames[chordRootNote], chordTypes[chordTypeIdx].name);
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawRightString(cname, 315, 8, 4);
+  tft.drawRightString(cname, 315, 34, 2);
 
   // ── Chord type selector (y=53..77, 8 buttons across) ─────────────────
   tft.fillRect(0, 52, 320, 27, THEME_BG);
@@ -178,14 +199,15 @@ void zombieChordHandleTouch() {
   for (int i = 0; i < NUM_CHORD_TYPES; i++) {
     if (isButtonPressed(5 + i*38, 53, 35, 24)) {
       chordTypeIdx = i;
+      chordRetrigger();          // re-voice held chord cleanly at new type
       chordNeedsRedraw = true;
       return;
     }
   }
 
   // Octave controls
-  if (isButtonPressed(5, 80, 45, 20))   { chordOctave = constrain(chordOctave - 1, 2, 7); chordNeedsRedraw = true; return; }
-  if (isButtonPressed(270, 80, 45, 20)) { chordOctave = constrain(chordOctave + 1, 2, 7); chordNeedsRedraw = true; return; }
+  if (isButtonPressed(5, 80, 45, 20))   { chordOctave = constrain(chordOctave - 1, 2, 7); chordRetrigger(); chordNeedsRedraw = true; return; }
+  if (isButtonPressed(270, 80, 45, 20)) { chordOctave = constrain(chordOctave + 1, 2, 7); chordRetrigger(); chordNeedsRedraw = true; return; }
 
   // HOLD toggle
   if (isButtonPressed(115, 80, 90, 20)) {
@@ -216,26 +238,32 @@ void zombieChordHandleTouch() {
     return;
   }
 
-  // STRUM SCALE – play one note from each degree of the scale in sequence
+  // STRUM SCALE – arpeggiate the chord (and its octave) up.  Notes are queued
+  // and fired one-per-tick from zombieChordUpdate() so the UI loop, touch and
+  // MIDI input are never blocked by delay().
   if (isButtonPressed(167, 207, 148, 30)) {
-    SynthEngine* synth = getZombieSynth();
-    if (synth) {
-      chordAllOff();
-      // Play root chord notes as arpeggiated burst (fire all at once, fun zombie strum)
-      const ChordType& ct = chordTypes[chordTypeIdx];
-      int baseNote = (chordOctave + 1) * 12 + chordRootNote;
-      for (int i = 0; i < ct.numNotes; i++) {
-        int note = baseNote + ct.intervals[i];
-        if (note >= 0 && note <= 127) synth->noteOn(note, 90);
-        delay(30);
-      }
-      // Also play the chord an octave up
-      for (int i = 0; i < ct.numNotes; i++) {
-        int note = baseNote + 12 + ct.intervals[i];
-        if (note >= 0 && note <= 127) synth->noteOn(note, 70);
-        delay(20);
+    chordAllOff();
+    const ChordType& ct = chordTypes[chordTypeIdx];
+    int baseNote = (chordOctave + 1) * 12 + chordRootNote;
+    chordStrumCount = 0;
+    for (int i = 0; i < ct.numNotes && chordStrumCount < 12; i++) {
+      int note = baseNote + ct.intervals[i];
+      if (note >= 0 && note <= 127) {
+        chordStrumNotes[chordStrumCount] = note;
+        chordStrumVels[chordStrumCount]  = 90;
+        chordStrumCount++;
       }
     }
+    for (int i = 0; i < ct.numNotes && chordStrumCount < 12; i++) {
+      int note = baseNote + 12 + ct.intervals[i];
+      if (note >= 0 && note <= 127) {
+        chordStrumNotes[chordStrumCount] = note;
+        chordStrumVels[chordStrumCount]  = 70;
+        chordStrumCount++;
+      }
+    }
+    chordStrumIdx    = 0;
+    chordStrumNextMs = millis();
     chordNeedsRedraw = true;
     return;
   }
@@ -248,12 +276,27 @@ void zombieChordInit() {
   chordHoldMode    = false;
   chordNeedsRedraw = true;
   chordActiveCount = 0;
-  for (int i = 0; i < 5; i++) chordActiveNotes[i] = -1;
+  chordStrumCount  = 0;
+  chordStrumIdx    = 0;
+  for (int i = 0; i < 12; i++) chordActiveNotes[i] = -1;
   tft.fillScreen(THEME_BG);
 }
 
 void zombieChordUpdate() {
-  // No continuous processing needed
+  // Drive the non-blocking strum: release one queued note every 28 ms.
+  if (chordStrumIdx < chordStrumCount && (long)(millis() - chordStrumNextMs) >= 0) {
+    SynthEngine* synth = getZombieSynth();
+    if (synth) {
+      int note = chordStrumNotes[chordStrumIdx];
+      synth->noteOn(note, chordStrumVels[chordStrumIdx]);
+      extern int lastPlayedMidiNote;
+      lastPlayedMidiNote = note;
+      // Track strummed notes so ALL-NOTES-OFF / BACK still silences them.
+      if (chordActiveCount < 12) chordActiveNotes[chordActiveCount++] = note;
+    }
+    chordStrumIdx++;
+    chordStrumNextMs += 28;
+  }
 }
 
 #endif
