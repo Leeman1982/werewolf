@@ -1,0 +1,40 @@
+Files needed in your Arduino ZombieSynth folder:
+=================================================
+
+Copy these files from the repository to:
+C:\Users\Default.DESKTOP-QO1EVKV\Documents\Arduino\ZombieSynth\
+
+Main Sketch:
+  ☐ ZombieSynth.ino
+
+Core Headers (REQUIRED):
+  ☐ common_definitions.h
+  ☐ ui_elements.h
+
+Synth Engine:
+  ☐ synth_engine.h
+  ☐ arpeggiator_patterns.h
+  ☐ zombie_step_sequencer.h
+  ☐ midi_input.h
+
+UI Modes:
+  ☐ zombie_synth_mode.h
+  ☐ zombie_arp_mode.h
+  ☐ zombie_seq_mode.h
+
+Display Config:
+  ☐ User_Setup.h (also copy to TFT_eSPI library folder!)
+
+How to copy:
+1. Select ALL files above in file explorer
+2. Ctrl+C (copy)
+3. Navigate to Arduino sketch folder
+4. Ctrl+V (paste)
+5. Overwrite if asked
+6. Open ZombieSynth.ino in Arduino IDE
+7. All files should appear as tabs
+
+If using git repository directly:
+- Just open ZombieSynth.ino from the repository folder
+- Arduino IDE will find all headers automatically
+- Still need to copy User_Setup.h to TFT_eSPI library!
