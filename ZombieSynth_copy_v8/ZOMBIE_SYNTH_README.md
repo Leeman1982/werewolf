@@ -40,18 +40,24 @@ A fully-featured Prophet-8 inspired polyphonic synthesizer for the ESP32 Cheap Y
 - **Gate length control**
 
 ### Step Sequencer
-- **16-step sequencer** with 4 independent tracks
+- **Up to 32-step sequencer** with 4 **fully independent tracks**
+  - Each track has its own voices and its own synth patch — tracks never
+    steal voices or cut each other off
 - **Per-step control:**
   - Note selection
   - Velocity
   - Gate length
   - Tie/legato
+  - P-Locks: per-step filter-cutoff and pan locks
+  - Ratchets, probability and conditional triggers
 - **Pattern operations:**
-  - Clear track
-  - Randomize track
-  - Shift left/right
-  - Reverse
-- **BPM and swing control**
+  - Clear / randomize track
+  - Copy / paste pattern banks
+  - 8 pattern banks, chainable
+- **Song mode:**
+  - Ordered list of pattern slots, each with a loop count
+  - 4-track **SNAPSHOT → PASTE** into a song slot
+- **BPM, tap-tempo and working swing**
 - **Real-time playback** with visual feedback
 
 ### MIDI Input
@@ -266,7 +272,7 @@ I2S Output (PCM5052 DAC)
 ## Future Enhancements
 
 - [ ] LFO modulation routing
-- [ ] Effects (chorus, delay, reverb)
+- [ ] Effects (reverb)
 - [ ] Patch save/load to SPIFFS
 - [ ] MIDI clock sync
 - [ ] Additional oscillator waveforms

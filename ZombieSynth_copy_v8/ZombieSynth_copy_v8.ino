@@ -1,6 +1,20 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.1
+ ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.2
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v3.2 Pro sequencer & FX pass:
+ - INDEPENDENT TRACKS: the 8-voice pool is split into per-track windows, so
+   each sequencer track has its own voices and patch.  Tracks no longer steal
+   voices, rewrite each other's timbre, or cut each other off; a note-off on
+   one track can't silence a same-pitch note on another.
+ - P-LOCKS FIXED: per-step cutoff/pan locks now reach the engine (the note-on
+   callback used to drop them).
+ - SWING now actually works (was stored but never applied to tick timing).
+ - CHORUS REMOVED (reclaims CPU + 8 KB DRAM); the synth FX page now hosts the
+   master tape DELAY (mix / feedback / time).
+ - SONG: 4-track SNAPSHOT clipboard + PASTE into a song slot's pattern, then
+   set the loop count with REPS; scroll-clamp bug fixed; tidier control row.
+ - Dead code / stale comments removed.
 
  v3.1 Audio quality & reliability pass:
  - Master output now uses an always-on cubic soft-clipper (replaces the

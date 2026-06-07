@@ -31,9 +31,12 @@
 #define BL_TABLE_SIZE  1024
 #define BL_NUM_TABLES  8
 
-// ── Chorus delay buffer ───────────────────────────────────────────────────────
-// Power of 2 required for fast wrap-around masking.  1024 ≈ 23 ms @ 44100 Hz.
-#define CHORUS_BUF_SIZE 1024
+// ── Sequencer voice partitioning ──────────────────────────────────────────────
+// The 8-voice pool is split evenly across the sequencer's tracks so each track
+// owns a private set of voices: tracks can never steal or cut each other off,
+// and a note-off on one track never silences a same-pitch note on another.
+#define SEQ_TRACKS        4
+#define VOICES_PER_TRACK  (MAX_VOICES / SEQ_TRACKS)   // = 2
 
 // ── Branchless clamp helpers (no compare-and-branch on ESP32) ────────────────
 static inline float fclamp(float v, float lo, float hi) {
@@ -451,73 +454,6 @@ struct AnalogSaturation {
     }
 };
 
-// ── Stereo chorus ──────────────────────────────────────────────────────────────
-// Two delay lines modulated by LFOs 90° apart for stereo width.
-// Base delay ≈ 10 ms (441 samples) ± depth * 200 samples.
-struct Chorus {
-    float bufL[CHORUS_BUF_SIZE];
-    float bufR[CHORUS_BUF_SIZE];
-    int   wPos;
-    float mix;
-    float depth;
-    float _phInc;
-    float phL;
-    float phR;
-
-    void init() {
-        memset(bufL, 0, sizeof(bufL));
-        memset(bufR, 0, sizeof(bufR));
-        wPos   = 0;
-        mix    = 0.0f;
-        depth  = 0.5f;
-        phL    = 0.0f;
-        phR    = 0.25f;  // 90° offset for stereo width
-        setRate(0.5f);
-    }
-
-    void setRate(float r) {
-        float hz = 0.1f + constrain(r, 0.0f, 1.0f) * 4.9f;
-        _phInc   = hz / (float)SAMPLE_RATE;
-    }
-
-    void setDepth(float d) { depth = constrain(d, 0.0f, 1.0f); }
-    void setMix(float m)   { mix   = constrain(m, 0.0f, 1.0f); }
-
-    inline void process(float in, float& outL, float& outR) {
-        bufL[wPos] = in;
-        bufR[wPos] = in;
-
-        if (mix < 0.001f) {
-            outL = outR = in;
-        } else {
-            const float dep  = depth * 200.0f;
-            const float base = 441.0f;
-
-            float rL = (float)wPos - base - dep * sinf(TWO_PI * phL);
-            float rR = (float)wPos - base - dep * sinf(TWO_PI * phR);
-            if (rL < 0.0f) rL += (float)CHORUS_BUF_SIZE;
-            if (rR < 0.0f) rR += (float)CHORUS_BUF_SIZE;
-
-            int   i0L = (int)rL & (CHORUS_BUF_SIZE - 1);
-            int   i1L = (i0L + 1) & (CHORUS_BUF_SIZE - 1);
-            float wetL = bufL[i0L] + (rL - floorf(rL)) * (bufL[i1L] - bufL[i0L]);
-
-            int   i0R = (int)rR & (CHORUS_BUF_SIZE - 1);
-            int   i1R = (i0R + 1) & (CHORUS_BUF_SIZE - 1);
-            float wetR = bufR[i0R] + (rR - floorf(rR)) * (bufR[i1R] - bufR[i0R]);
-
-            const float dry = 1.0f - mix;
-            outL = in * dry + wetL * mix;
-            outR = in * dry + wetR * mix;
-        }
-
-        wPos = (wPos + 1) & (CHORUS_BUF_SIZE - 1);
-
-        phL += _phInc; if (phL >= 1.0f) phL -= 1.0f;
-        phR += _phInc; if (phR >= 1.0f) phR -= 1.0f;
-    }
-};
-
 // ── BPM-synced stereo-spread delay (mono in, stereo out) ─────────────────────
 // Tape-style: read tap at `delaySamples`, feed back into the write head.
 // L tap is straight; R tap is offset by 7 ms for natural stereo spread.
@@ -643,7 +579,6 @@ private:
     SemaphoreHandle_t _mutex;
 
     AnalogSaturation  _sat;
-    Chorus            _chorus;
     DelayFX           _delay;
     MasterLimiter     _limiter;
     bool              _limiterOn;
@@ -693,7 +628,6 @@ public:
         _mutex = xSemaphoreCreateMutex();
 
         _sat.init();
-        _chorus.init();
         _delay.init();
         _limiter.init();
 
@@ -934,25 +868,6 @@ public:
         xSemaphoreGive(_mutex);
     }
 
-    // ── FX: Chorus ────────────────────────────────────────────────────────────
-    void setChorusRate(float r) {
-        xSemaphoreTake(_mutex, portMAX_DELAY);
-        _chorus.setRate(r);
-        xSemaphoreGive(_mutex);
-    }
-
-    void setChorusDepth(float d) {
-        xSemaphoreTake(_mutex, portMAX_DELAY);
-        _chorus.setDepth(d);
-        xSemaphoreGive(_mutex);
-    }
-
-    void setChorusMix(float m) {
-        xSemaphoreTake(_mutex, portMAX_DELAY);
-        _chorus.setMix(m);
-        xSemaphoreGive(_mutex);
-    }
-
     // ── FX: BPM-synced delay ──────────────────────────────────────────────────
     void setDelayMix(float m) {
         xSemaphoreTake(_mutex, portMAX_DELAY);
@@ -1007,6 +922,71 @@ public:
         xSemaphoreGive(_mutex);
     }
 
+    // ── Per-track note-on (sequencer) ─────────────────────────────────────────
+    // Each track owns a private voice window [track*VOICES_PER_TRACK, +N) so it
+    // never steals from or cuts off another track.  The track's full SynthPatch
+    // is applied to ITS voice only — no global state thrash, so a sustaining
+    // note on another track keeps its own timbre/envelope.  pan and cutoffMod
+    // (P-Locks) are applied per note.
+    void noteOnTrack(int track, int note, int velocity,
+                     float pan, float cutoffMod, const SynthPatch& p) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        int t   = (track < 0) ? 0 : (track >= SEQ_TRACKS ? SEQ_TRACKS - 1 : track);
+        int lo  = t * VOICES_PER_TRACK;
+        int hi  = lo + VOICES_PER_TRACK;
+        // Pick a voice within this track's window: same note → free → oldest.
+        int vi = -1;
+        for (int i = lo; i < hi; i++)
+            if (voices[i].active && voices[i].note == note) { vi = i; break; }
+        if (vi < 0)
+            for (int i = lo; i < hi; i++)
+                if (!voices[i].active) { vi = i; break; }
+        if (vi < 0) {
+            vi = lo;
+            unsigned long oldest = voices[lo].noteOnTime;
+            for (int i = lo + 1; i < hi; i++)
+                if (voices[i].noteOnTime < oldest) { oldest = voices[i].noteOnTime; vi = i; }
+        }
+        Voice& v = voices[vi];
+        // Apply the per-track patch to this voice only.
+        v.osc1.waveform   = (WaveformType)p.osc1Wave;
+        v.osc2.waveform   = (WaveformType)p.osc2Wave;
+        v.subOsc.waveform = (WaveformType)p.subWave;
+        v.osc1Level       = constrain(p.osc1Level, 0.0f, 1.0f);
+        v.osc2Level       = constrain(p.osc2Level, 0.0f, 1.0f);
+        v.osc2Detune      = p.osc2Detune;
+        v.setSubLevelCached(constrain(p.subLevel, 0.0f, 1.0f));
+        v.subOctave       = (p.subOctave < 1) ? 1 : (p.subOctave > 2 ? 2 : p.subOctave);
+        v.filterEnvAmount = constrain(p.filterEnvAmount, 0.0f, 1.0f);
+        v.filter.type     = (FilterType)p.filterType;
+        v.filter.setCutoff(p.filterCutoff);
+        v.filter.setResonance(p.filterResonance);
+        v.ampEnv.init(p.ampAttack, p.ampDecay, p.ampSustain, p.ampRelease);
+        v.filterEnv.init(p.filterAttack, p.filterDecay, p.filterSustain, p.filterRelease);
+        float pp = constrain(pan, -1.0f, 1.0f);
+        v.gainL      = sqrtf(0.5f * (1.0f - pp));
+        v.gainR      = sqrtf(0.5f * (1.0f + pp));
+        v.cutoffLock = constrain(cutoffMod, -1.0f, 1.0f);
+        v.noteOn(note, velocity);
+        if (pitchBendRatio != 1.0f) {
+            v.osc1.setFrequency(v.baseFreq * pitchBendRatio);
+            v.osc2.setFrequency(v.baseFreq * (1.0f + v.osc2Detune) * pitchBendRatio);
+        }
+        xSemaphoreGive(_mutex);
+    }
+
+    // Note-off restricted to a track's voice window so it can't silence a
+    // same-pitch note sounding on a different track.
+    void noteOffTrack(int track, int note) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        int t  = (track < 0) ? 0 : (track >= SEQ_TRACKS ? SEQ_TRACKS - 1 : track);
+        int lo = t * VOICES_PER_TRACK;
+        int hi = lo + VOICES_PER_TRACK;
+        for (int i = lo; i < hi; i++)
+            if (voices[i].active && voices[i].note == note) voices[i].noteOff();
+        xSemaphoreGive(_mutex);
+    }
+
     // ── Audio generation ──────────────────────────────────────────────────────
     // Mutex held only during render; released before i2s_write so DMA blocking
     // doesn't stall Core-1 parameter setters.
@@ -1035,7 +1015,7 @@ public:
             mixL = _sat.apply(mixL * masterVol * 0.3f);
             mixR = _sat.apply(mixR * masterVol * 0.3f);
 
-            // Single mono sum reused twice below (was: computed 3× per sample).
+            // Mono sum feeds the delay send (one tap, stereo-spread return).
             const float monoMix = (mixL + mixR) * 0.5f;
 
             // Optional BPM-synced delay sends a mono signal through the ring
@@ -1043,13 +1023,9 @@ public:
             float dL = 0.0f, dR = 0.0f;
             _delay.process(monoMix, dL, dR);
 
-            // Chorus is fed the same mono sum; its stereo wet adds to per-voice pan dry.
-            float chL, chR;
-            _chorus.process(monoMix, chL, chR);
-
-            // Dry pan retained; chorus contributes its wet portion; delay adds.
-            float outL = mixL + (chL - monoMix) + dL;
-            float outR = mixR + (chR - monoMix) + dR;
+            // Dry pan retained; delay adds its stereo wet on top.
+            float outL = mixL + dL;
+            float outR = mixR + dR;
 
             // Optional master limiter (selectable) tames sustained peaks.
             if (limiterOn) _limiter.process(outL, outR);

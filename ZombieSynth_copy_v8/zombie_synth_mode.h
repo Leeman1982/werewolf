@@ -32,9 +32,9 @@ struct ZombieSynthParams {
   // FX
   float fxSatDrive;
   float fxSatAmount;
-  float fxChorusRate;
-  float fxChorusDepth;
-  float fxChorusMix;
+  float fxDelayMix;
+  float fxDelayFeedback;
+  int   fxDelayDiv;     // 0..3 → 1/4, 1/8d, 1/8, 1/16  (at 120 BPM reference)
   int   currentPage;
   bool  needsRedraw;
   int   activeSlider;
@@ -77,11 +77,11 @@ void zombieSynthInit() {
   synthParams.filterSustain = 0.5f;  synthParams.filterRelease = 0.3f;
   synthParams.masterVolume = 0.7f;
   // FX defaults (all off)
-  synthParams.fxSatDrive   = 0.0f;
-  synthParams.fxSatAmount  = 0.0f;
-  synthParams.fxChorusRate  = 0.5f;
-  synthParams.fxChorusDepth = 0.5f;
-  synthParams.fxChorusMix   = 0.0f;
+  synthParams.fxSatDrive      = 0.0f;
+  synthParams.fxSatAmount     = 0.0f;
+  synthParams.fxDelayMix      = 0.0f;
+  synthParams.fxDelayFeedback = 0.35f;
+  synthParams.fxDelayDiv      = 2;     // 1/8
   synthParams.currentPage  = 0;
   synthParams.needsRedraw  = true;
   synthParams.activeSlider = -1;
@@ -101,9 +101,11 @@ void zombieSynthInit() {
   zombieSynth->setMasterVolume(synthParams.masterVolume);
   zombieSynth->setSaturationDrive(synthParams.fxSatDrive);
   zombieSynth->setSaturationAmount(synthParams.fxSatAmount);
-  zombieSynth->setChorusRate(synthParams.fxChorusRate);
-  zombieSynth->setChorusDepth(synthParams.fxChorusDepth);
-  zombieSynth->setChorusMix(synthParams.fxChorusMix);
+  // Delay is a shared master FX (also driven by the sequencer) — reflect the
+  // engine's current state instead of overwriting it on every mode entry.
+  synthParams.fxDelayMix      = zombieSynth->getDelayMix();
+  synthParams.fxDelayFeedback = zombieSynth->getDelayFeedback();
+  synthParams.fxDelayDiv      = zombieSynth->getDelayDivision();
 
   tft.fillScreen(THEME_BG);
 }
@@ -287,25 +289,34 @@ void zombieSynthDrawLFOPage() {
 }
 
 // ─── FX page ─────────────────────────────────────────────────────────────────
-// 5 vertical sliders: SAT DRV | SAT AMT | CHO RT | CHO DPT | CHO MIX
-// Divider line between SAT and CHO group at x=65.
+// SAT DRV | SAT AMT  ||  DLY MIX | DLY FBK | DLY TIME
+// Chorus was removed; the freed slots now host the master tape delay.
+static const char* DLY_DIV_NAMES[4] = {"1/4","1/8d","1/8","1/16"};
 void zombieSynthDrawFXPage() {
-  // Sliders shortened to h=140 so the section labels below sit fully on the
-  // 240 px screen (was h=150 with labels at y=237, clipped off the bottom).
   drawVerticalSlider(5,   83, 58, 140, "SAT DRV", synthParams.fxSatDrive);
   drawVerticalSlider(68,  83, 58, 140, "SAT AMT", synthParams.fxSatAmount);
 
-  // Visual divider between saturation and chorus sections
+  // Visual divider between saturation and delay sections
   tft.drawLine(131, 86, 131, 220, THEME_TEXT_DIM);
 
-  drawVerticalSlider(135, 83, 58, 140, "CHO RT",  synthParams.fxChorusRate);
-  drawVerticalSlider(198, 83, 58, 140, "CHO DPT", synthParams.fxChorusDepth);
-  drawVerticalSlider(261, 83, 56, 140, "CHO MIX", synthParams.fxChorusMix);
+  drawVerticalSlider(135, 83, 58, 140, "DLY MIX", synthParams.fxDelayMix);
+  drawVerticalSlider(198, 83, 58, 140, "DLY FBK", synthParams.fxDelayFeedback);
 
-  // Section labels (now fully visible: y=225 + 14 px font-2 = 239 < 240)
+  // Delay time selector (button stack instead of a slider) – x=261..316
+  tft.fillRoundRect(261, 83, 56, 140, 4, THEME_BG);
+  tft.drawRoundRect(261, 83, 56, 140, 4, THEME_OUTLINE);
+  tft.setTextColor(THEME_PRIMARY, THEME_BG);
+  tft.drawCentreString("DLY", 289, 87, 2);
+  drawButton(266, 108, 46, 24, "<>", false);
+  tft.setTextColor(THEME_ACCENT, THEME_BG);
+  tft.drawCentreString(DLY_DIV_NAMES[constrain(synthParams.fxDelayDiv, 0, 3)], 289, 150, 2);
+  tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
+  tft.drawCentreString("TIME", 289, 175, 2);
+
+  // Section labels (fully visible: y=225 + 14 px font-2 = 239 < 240)
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
   tft.drawCentreString("SATURATION", 63, 225, 2);
-  tft.drawCentreString("CHORUS", 220, 225, 2);
+  tft.drawCentreString("DELAY", 226, 225, 2);
 }
 
 // ─── Main draw ───────────────────────────────────────────────────────────────
@@ -422,11 +433,15 @@ void zombieSynthHandleTouch() {
       break;
     }
     case 5: { // FX page
-      if (handleSliderTouch(5,  83, 58, 140, synthParams.fxSatDrive))   { zombieSynth->setSaturationDrive(synthParams.fxSatDrive);   changed = true; }
-      if (handleSliderTouch(68, 83, 58, 140, synthParams.fxSatAmount))  { zombieSynth->setSaturationAmount(synthParams.fxSatAmount);  changed = true; }
-      if (handleSliderTouch(135,83, 58, 140, synthParams.fxChorusRate)) { zombieSynth->setChorusRate(synthParams.fxChorusRate);       changed = true; }
-      if (handleSliderTouch(198,83, 58, 140, synthParams.fxChorusDepth)){ zombieSynth->setChorusDepth(synthParams.fxChorusDepth);     changed = true; }
-      if (handleSliderTouch(261,83, 56, 140, synthParams.fxChorusMix))  { zombieSynth->setChorusMix(synthParams.fxChorusMix);         changed = true; }
+      if (handleSliderTouch(5,  83, 58, 140, synthParams.fxSatDrive))      { zombieSynth->setSaturationDrive(synthParams.fxSatDrive);        changed = true; }
+      if (handleSliderTouch(68, 83, 58, 140, synthParams.fxSatAmount))     { zombieSynth->setSaturationAmount(synthParams.fxSatAmount);      changed = true; }
+      if (handleSliderTouch(135,83, 58, 140, synthParams.fxDelayMix))      { zombieSynth->setDelayMix(synthParams.fxDelayMix);               changed = true; }
+      if (handleSliderTouch(198,83, 58, 140, synthParams.fxDelayFeedback)) { zombieSynth->setDelayFeedback(synthParams.fxDelayFeedback);     changed = true; }
+      if (touch.justPressed && isButtonPressed(266, 108, 46, 24)) {
+        synthParams.fxDelayDiv = (synthParams.fxDelayDiv + 1) & 3;
+        zombieSynth->setDelayDivision(120.0f, synthParams.fxDelayDiv);
+        changed = true;
+      }
       break;
     }
   }

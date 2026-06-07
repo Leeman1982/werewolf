@@ -75,7 +75,10 @@ struct SequencerStep {
   int8_t  panLock;      // -64..+63 → pan offset (÷64), added to track pan
 };
 
-typedef void (*SeqNoteOnCB)(int trackIdx, int noteNum, int vel);
+// pan and cutoffMod carry the per-step P-Locks (and track pan) through to the
+// engine so they actually take effect — previously they were computed then
+// dropped because the callback only forwarded note + velocity.
+typedef void (*SeqNoteOnCB)(int trackIdx, int noteNum, int vel, float pan, float cutoffMod);
 typedef void (*SeqNoteOffCB)(int trackIdx, int noteNum);
 
 // ── Track ─────────────────────────────────────────────────────────────────────
@@ -253,6 +256,7 @@ private:
   float           bpm;
   unsigned long   lastTickUs;
   unsigned long   tickIntervalUs;
+  uint32_t        swingTickCtr;   // free-running 1/32 tick counter for swing
   bool            isPlaying;
   int             activeTrack;
   unsigned long   tapTimes[4];
@@ -263,6 +267,8 @@ private:
   int             activeNotes[MAX_SEQ_TRACKS];
   Preferences     prefs;          // namespace "zombie_seq"
   bool            prefsOpen;
+  SeqPattern      _clip;           // 4-track snapshot clipboard
+  bool            _clipFull;
 #ifdef USE_SD_STORAGE
   bool            sdAvailable = false;
 #endif
@@ -323,7 +329,7 @@ private:
 
     if (!step.tie) fireNoteOff(t);
 
-    if (_noteOnCB) _noteOnCB(t, note, effVel);
+    if (_noteOnCB) _noteOnCB(t, note, effVel, pan, cutoffMod);
     else if (synth) synth->noteOnPanCutoff(note, effVel, pan, cutoffMod);
     activeNotes[t] = note;
 
@@ -351,7 +357,7 @@ private:
         float rpan      = constrain(tr.trackPan + (float)step.panLock * (1.0f / 64.0f), -1.0f, 1.0f);
         float rcutoffMod = (float)step.cutoffLock * (1.0f / 64.0f);
         fireNoteOff(t);
-        if (_noteOnCB) _noteOnCB(t, note, rvel);
+        if (_noteOnCB) _noteOnCB(t, note, rvel, rpan, rcutoffMod);
         else if (synth) synth->noteOnPanCutoff(note, rvel, rpan, rcutoffMod);
         activeNotes[t]   = note;
         tr.gateCountdown = max(1, div / (2 * (int)step.ratchets));
@@ -429,9 +435,9 @@ public:
       clockMode(CLOCK_INTERNAL), extClockAccum(0), outClockAccum(0),
       _midiSendByteCB(NULL),
       recordArmed(false), recordTrack(0),
-      bpm(120.0f), lastTickUs(0), tickIntervalUs(0), isPlaying(false),
+      bpm(120.0f), lastTickUs(0), tickIntervalUs(0), swingTickCtr(0), isPlaying(false),
       activeTrack(0), tapCount(0), synth(NULL), _noteOnCB(NULL), _noteOffCB(NULL),
-      prefsOpen(false) {
+      prefsOpen(false), _clipFull(false) {
     for (int i = 0; i < MAX_SEQ_TRACKS; i++) activeNotes[i] = -1;
     for (int i = 0; i < 4; i++) tapTimes[i] = 0;
     for (int p = 0; p < MAX_PATTERNS; p++)
@@ -464,6 +470,7 @@ public:
     isPlaying  = true;
     lastTickUs = micros();
     extClockAccum = 0;
+    swingTickCtr  = 0;
     for (int t = 0; t < MAX_SEQ_TRACKS; t++) {
       SequencerTrack& tr = patterns[activePattern].tracks[t];
       tr.currentStep   = 0; tr.tickCount    = 0;
@@ -498,14 +505,28 @@ public:
   // In CLOCK_EXT mode the tick driver is silent here (ticks are driven by
   // incoming MIDI 0xF8 messages via onMidiClockTick()).  In CLOCK_OUT mode
   // we additionally emit 24 PPQN out of midiSerial via the callback.
+  // Swing: lengthen the on-beat 16th and shorten the off-beat 16th so each
+  // 8th-note (4 internal ticks) keeps the same total duration → tempo is
+  // preserved, only the feel shifts.  swing 50 = straight, 75 = ~75/25 (near
+  // triplet).  Returns the µs interval that gates the next tick.
+  unsigned long swingTickInterval() const {
+    if (swing <= 50) return tickIntervalUs;
+    float d   = (float)(swing - 50) / 50.0f;            // 0 .. 0.5
+    float mul = ((swingTickCtr & 3u) < 2u) ? (1.0f + d) : (1.0f - d);
+    return (unsigned long)((float)tickIntervalUs * mul);
+  }
+
   void update(unsigned long /*unused*/) {
     if (!isPlaying) return;
     if (clockMode == CLOCK_EXT) return;  // ticks come from external clock
     unsigned long now = micros();
     int limit = 8;
-    while (limit-- > 0 && (now - lastTickUs) >= tickIntervalUs) {
-      lastTickUs += tickIntervalUs;
+    while (limit-- > 0) {
+      unsigned long iv = swingTickInterval();
+      if ((now - lastTickUs) < iv) break;
+      lastTickUs += iv;
       processTick();
+      swingTickCtr++;
       // Emit MIDI clock when in OUT mode: 1/32 internal tick = 8 ticks/quarter,
       // 24 PPQN = 24 ticks/quarter ⇒ emit 3 clock bytes per internal tick.
       if (clockMode == CLOCK_OUT && _midiSendByteCB) {
@@ -613,6 +634,21 @@ public:
   void copyPattern(int from, int to) {
     if (from >= 0 && from < MAX_PATTERNS && to >= 0 && to < MAX_PATTERNS)
       patterns[to] = patterns[from];
+  }
+
+  // ── 4-track snapshot clipboard ──────────────────────────────────────────────
+  // snapshotTracks() captures all four tracks of the active pattern (steps +
+  // per-track sound/scale/mix) into a clipboard.  pasteSnapshot(pat) drops that
+  // capture into any pattern bank, which a SONG slot can then reference and loop.
+  void snapshotTracks() {
+    _clip     = patterns[activePattern];
+    _clipFull = true;
+  }
+  bool hasSnapshot() const { return _clipFull; }
+  bool pasteSnapshot(int pat) {
+    if (!_clipFull || pat < 0 || pat >= MAX_PATTERNS) return false;
+    patterns[pat] = _clip;
+    return true;
   }
   void euclideanTrack(int t, int k, int n) {
     if (t >= 0 && t < MAX_SEQ_TRACKS) patterns[activePattern].tracks[t].euclidean(k, n);

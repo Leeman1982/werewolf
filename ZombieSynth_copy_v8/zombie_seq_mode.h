@@ -38,20 +38,20 @@ static int  seqPatSaveSlot    = -1;  // last-touched pattern slot for save/load
 static int  seqPendingPatAction = 0; // 0=none, 1=save, 2=load (waits for slot pick)
 
 // ── Note-on / note-off callbacks ──────────────────────────────────────────────
-void seqNoteOnHandler(int trackIdx, int noteNum, int vel) {
+// Each track fires into its own private voice window with its own patch, so
+// tracks stay fully independent (no cross-track voice stealing or timbre
+// bleed).  pan already folds in the per-step panLock; cutoffMod is the per-step
+// cutoff P-Lock — both are now honoured.
+void seqNoteOnHandler(int trackIdx, int noteNum, int vel, float pan, float cutoffMod) {
   SynthEngine* synth = getZombieSynth();
   if (!synth) return;
   SequencerTrack* t = zombieSeq ? zombieSeq->getTrack(trackIdx) : NULL;
-  if (t) {
-    synth->applyPatch(t->trackPatch);
-    synth->noteOnPan(noteNum, vel, t->trackPan);
-  } else {
-    synth->noteOn(noteNum, vel);
-  }
+  if (t) synth->noteOnTrack(trackIdx, noteNum, vel, pan, cutoffMod, t->trackPatch);
+  else   synth->noteOn(noteNum, vel);
 }
 void seqNoteOffHandler(int trackIdx, int noteNum) {
   SynthEngine* synth = getZombieSynth();
-  if (synth) synth->noteOff(noteNum);
+  if (synth) synth->noteOffTrack(trackIdx, noteNum);
 }
 
 // ── Drawing helpers ───────────────────────────────────────────────────────────
@@ -66,13 +66,6 @@ static void seqStepCell(int x, int y, int w, int h,
   else if (active)             { bg = THEME_PRIMARY;   brd = THEME_OUTLINE;  }
   tft.fillRoundRect(x, y, w, h, 3, bg);
   tft.drawRoundRect(x, y, w, h, 3, brd);
-}
-
-// Small +/- spin button pair: returns x after the pair
-static void seqSpin(int x, int y, int h, const char* label,
-                    const char* valStr, uint16_t labelColor=THEME_TEXT_DIM) {
-  tft.setTextColor(labelColor, THEME_BG);
-  tft.drawString(label, x, y+2, 2);
 }
 
 // ── Header ────────────────────────────────────────────────────────────────────
@@ -896,36 +889,26 @@ static void seqDrawSong() {
     tft.drawCentreString(sb, sx+18, 75, 2);
   }
 
-  // Row 2: SAVE / LOAD / CLR / LOOP / scroll (y=92, h=16)
+  // Row 2: SAVE / LOAD / CLR / LOOP / SNAP / PASTE / UP / DN (y=92, h=16)
+  auto songBtn = [](int x, int w, const char* lbl, uint16_t bg, uint16_t txt) {
+    tft.fillRoundRect(x, 92, w, 16, 3, bg);
+    tft.drawRoundRect(x, 92, w, 16, 3, THEME_OUTLINE);
+    tft.setTextColor(txt, bg);
+    tft.drawCentreString(lbl, x + w/2, 94, 2);
+  };
   uint16_t pendBg = seqPendingSongAction ? THEME_WARNING : THEME_BG;
-  tft.fillRoundRect(4, 92, 50, 16, 3, THEME_BG);
-  tft.drawRoundRect(4, 92, 50, 16, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("SAVE", 29, 94, 2);
-  tft.fillRoundRect(58, 92, 50, 16, 3, pendBg);
-  tft.drawRoundRect(58, 92, 50, 16, 3, THEME_OUTLINE);
-  tft.setTextColor(seqPendingSongAction ? THEME_BG : THEME_PRIMARY, pendBg);
-  tft.drawCentreString("LOAD", 83, 94, 2);
-  tft.fillRoundRect(112, 92, 50, 16, 3, THEME_BG);
-  tft.drawRoundRect(112, 92, 50, 16, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("CLR", 137, 94, 2);
-  // LOOP toggle
-  bool loop = zombieSeq->songLoop;
-  uint16_t loopBg = loop ? THEME_SUCCESS : THEME_BG;
-  tft.fillRoundRect(166, 92, 50, 16, 3, loopBg);
-  tft.drawRoundRect(166, 92, 50, 16, 3, THEME_OUTLINE);
-  tft.setTextColor(loop ? THEME_BG : THEME_PRIMARY, loopBg);
-  tft.drawCentreString("LOOP", 191, 94, 2);
-  // Scroll
-  tft.fillRoundRect(220, 92, 46, 16, 3, THEME_BG);
-  tft.drawRoundRect(220, 92, 46, 16, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("UP", 243, 94, 2);
-  tft.fillRoundRect(270, 92, 46, 16, 3, THEME_BG);
-  tft.drawRoundRect(270, 92, 46, 16, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("DN", 293, 94, 2);
+  bool     snap   = zombieSeq->hasSnapshot();
+  bool     loop   = zombieSeq->songLoop;
+  songBtn(2,   36, "SAVE", THEME_BG, THEME_PRIMARY);
+  songBtn(40,  36, "LOAD", pendBg, seqPendingSongAction ? THEME_BG : THEME_PRIMARY);
+  songBtn(78,  30, "CLR",  THEME_BG, THEME_PRIMARY);
+  songBtn(110, 38, "LOOP", loop ? THEME_SUCCESS : THEME_BG, loop ? THEME_BG : THEME_PRIMARY);
+  // SNAP captures the current 4 tracks; lit green once a snapshot is held.
+  songBtn(150, 40, "SNAP", snap ? THEME_SUCCESS : THEME_BG, snap ? THEME_BG : THEME_PRIMARY);
+  // PASTE drops the snapshot into the selected slot's pattern (disabled until SNAP).
+  songBtn(192, 44, "PASTE", snap ? THEME_BG : THEME_SURFACE, snap ? THEME_PRIMARY : THEME_TEXT_DIM);
+  songBtn(238, 38, "UP",   THEME_BG, THEME_PRIMARY);
+  songBtn(278, 38, "DN",   THEME_BG, THEME_PRIMARY);
 
   // Rows 3..6: visible slots (y=111..175, 4 rows × 16 px = 64 px)
   Song& song = zombieSeq->currentSong;
@@ -1032,33 +1015,46 @@ static void seqTouchSong() {
       seqNeedsRedraw = true; return;
     }
   }
-  // Row 2: SAVE / LOAD / CLR / LOOP / UP / DN
-  if (isButtonPressed(4, 92, 50, 16)) {
+  // Row 2: SAVE / LOAD / CLR / LOOP / SNAP / PASTE / UP / DN
+  if (isButtonPressed(2, 92, 36, 16)) {
     zombieSeq->saveSong(seqSongSaveSlot);
     seqNeedsRedraw = true; return;
   }
-  if (isButtonPressed(58, 92, 50, 16)) {
+  if (isButtonPressed(40, 92, 36, 16)) {
     seqPendingSongAction = !seqPendingSongAction;
     seqNeedsRedraw = true; return;
   }
-  if (isButtonPressed(112, 92, 50, 16)) {
+  if (isButtonPressed(78, 92, 30, 16)) {
     zombieSeq->songClear();
     seqSongSlotIdx = 0;
     songVisibleStart = 0;
     seqNeedsRedraw = true; return;
   }
-  if (isButtonPressed(166, 92, 50, 16)) {
+  if (isButtonPressed(110, 92, 38, 16)) {
     zombieSeq->songLoop = !zombieSeq->songLoop;
     seqNeedsRedraw = true; return;
   }
-  if (isButtonPressed(220, 92, 46, 16)) {
+  // SNAP: capture the active pattern's 4 tracks into the clipboard.
+  if (isButtonPressed(150, 92, 40, 16)) {
+    zombieSeq->snapshotTracks();
+    seqNeedsRedraw = true; return;
+  }
+  // PASTE: drop the snapshot into the selected slot's pattern bank, so that
+  // song slot plays the captured 4 tracks (loop count set via REPS +/-).
+  if (isButtonPressed(192, 92, 44, 16)) {
+    Song& sg = zombieSeq->currentSong;
+    if (zombieSeq->hasSnapshot() && seqSongSlotIdx < (int)sg.numSlots) {
+      zombieSeq->pasteSnapshot(sg.slots[seqSongSlotIdx].patternIdx);
+    }
+    seqNeedsRedraw = true; return;
+  }
+  if (isButtonPressed(238, 92, 38, 16)) {
     songVisibleStart = max(0, songVisibleStart - 1);
     seqNeedsRedraw = true; return;
   }
-  if (isButtonPressed(270, 92, 46, 16)) {
-    songVisibleStart = min((int)zombieSeq->currentSong.numSlots - 1,
-                            songVisibleStart + 1);
-    if (songVisibleStart < 0) songVisibleStart = 0;
+  if (isButtonPressed(278, 92, 38, 16)) {
+    int maxStart = max(0, (int)zombieSeq->currentSong.numSlots - 4);
+    songVisibleStart = min(maxStart, songVisibleStart + 1);
     seqNeedsRedraw = true; return;
   }
 
@@ -1283,7 +1279,7 @@ static void seqDrawSynth() {
       break;
     }
 
-    case 6: { // FX – master delay + chorus mix + selectable limiter
+    case 6: { // FX – master delay + selectable limiter
       SynthEngine* synth = getZombieSynth();
       int   div  = synth ? synth->getDelayDivision() : 0;
       float dmix = synth ? synth->getDelayMix()      : 0.0f;
