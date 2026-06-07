@@ -43,8 +43,7 @@ enum AppMode {
   ZOMBIE_SYNTH,
   ZOMBIE_ARP,
   ZOMBIE_SEQ,
-  ZOMBIE_PRESETS,
-  ZOMBIE_CHORD
+  ZOMBIE_PRESETS
 };
 
 // Music theory

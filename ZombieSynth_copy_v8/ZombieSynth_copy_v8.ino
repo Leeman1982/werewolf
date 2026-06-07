@@ -52,7 +52,6 @@
  - 16-step sequencer with per-track sound select (4 tracks)
  - Presets: 10 factory + 10 user (NVS persistent via Preferences)
  - On-screen QWERTY for preset naming
- - Chord Pad: 8 chord types × 12 roots (bonus feature)
  - Note name display as notes are played
  - USB and 5-pin DIN MIDI input (GPIO 35)
  - PCM5052 DAC output (I2S) on GPIO 22/27/17
@@ -79,7 +78,6 @@
 #include "zombie_arp_mode.h"
 #include "zombie_seq_mode.h"
 #include "zombie_presets_mode.h"
-#include "zombie_chord_pad.h"
 
 // ── Hardware pins ──────────────────────────────────────────────────────────
 #define XPT2046_IRQ  36
@@ -212,16 +210,18 @@ static const AppIcon apps[] = {
   {"ARP",     "ARP", ZOMBIE_ARP},
   {"SEQ",     "SEQ", ZOMBIE_SEQ},
   {"PRESETS", "PRE", ZOMBIE_PRESETS},
-  {"CHORD",   "CHD", ZOMBIE_CHORD},
 };
-static const int NUM_APPS = 5;
+static const int NUM_APPS = 4;
 
-// Layout: row0 = icons 0-2 (3 wide), row1 = icons 3-4 (2 wide, centred)
+// Layout: row0 = icons 0-2 (3 wide), row1 = remaining icons (centred for the
+// actual count in that row, so the menu stays balanced as apps are added/removed).
 static const int ICON_W = 88, ICON_H = 58, ICON_GAP = 8;
 
 static int iconX(int i) {
-  if (i < 3) return (320 - 3*(ICON_W+ICON_GAP) + ICON_GAP) / 2 + (i % 3)*(ICON_W+ICON_GAP);
-  else        return (320 - 2*(ICON_W+ICON_GAP) + ICON_GAP) / 2 + (i - 3)*(ICON_W+ICON_GAP);
+  int n = (i < 3) ? ((NUM_APPS < 3) ? NUM_APPS : 3)   // icons in row 0
+                  : (NUM_APPS - 3);                    // icons in row 1
+  int col = (i < 3) ? i : (i - 3);
+  return (320 - n*(ICON_W+ICON_GAP) + ICON_GAP) / 2 + col*(ICON_W+ICON_GAP);
 }
 static int iconY(int i) {
   return 85 + (i / 3) * (ICON_H + ICON_GAP);
@@ -273,7 +273,6 @@ void enterMode(AppMode mode) {
     case ZOMBIE_ARP:     zombieArpInit();     break;
     case ZOMBIE_SEQ:     zombieSeqInit();     break;
     case ZOMBIE_PRESETS: zombiePresetsInit(); break;
-    case ZOMBIE_CHORD:   zombieChordInit();   break;
     default:             drawMenu();          break;
   }
 }
@@ -285,7 +284,6 @@ void exitToMenu() {
   if (synth) synth->allNotesOff();
   if (arp)   arp->allNotesOff();
   if (seq)   seq->stop();
-  chordAllOff();
   enterMode(MENU);
 }
 
@@ -431,12 +429,6 @@ void loop() {
       zombiePresetsDraw();
       zombiePresetsHandleTouch();
       zombiePresetsUpdate();
-      break;
-
-    case ZOMBIE_CHORD:
-      zombieChordDraw();
-      zombieChordHandleTouch();
-      zombieChordUpdate();
       break;
   }
 
