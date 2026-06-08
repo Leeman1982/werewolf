@@ -700,21 +700,20 @@ static void seqDoArpFill(int trackIdx, int arpPatIdx) {
   SequencerTrack* tr = zombieSeq->getTrack(trackIdx);
   if (!tr) return;
 
-  // Build an in-scale note list spanning ±1 octave around the track octave
+  // Build an in-scale note pool centred on middle C (MIDI 60, C4) so arp fills
+  // land in a musical mid range.  The track's own octave is applied later at
+  // trigger time (raw = note + (octave-3)*12), so we deliberately work in
+  // absolute MIDI here.  (The old code used tr->octave as an absolute MIDI
+  // octave — oct*12 — which forced every fill down to ~C1 and sounded awful.)
   int  notes[48];
   int  nc   = 0;
   uint16_t mask = SEQ_SCALE_MASKS[tr->scale];
-  int  octLo    = constrain(tr->octave - 1, 0, 7);
-  int  octHi    = constrain(tr->octave + 1, 0, 7);
+  const int loMidi = 48;   // C3
+  const int hiMidi = 72;   // C5  (two octaves, centred on C4)
 
-  for (int oct = octLo; oct <= octHi && nc < 48; oct++) {
-    for (int s = 0; s < 12 && nc < 48; s++) {
-      int rel = (s - tr->rootNote + 12) % 12;
-      if (mask & (1 << rel)) {
-        int note = oct * 12 + s;
-        if (note >= 0 && note <= 127) notes[nc++] = note;
-      }
-    }
+  for (int m = loMidi; m <= hiMidi && nc < 48; m++) {
+    int rel = ((m - tr->rootNote) % 12 + 12) % 12;
+    if (mask & (1 << rel)) notes[nc++] = m;
   }
 
   if (nc == 0) return;

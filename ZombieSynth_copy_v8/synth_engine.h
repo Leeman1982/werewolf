@@ -251,12 +251,26 @@ struct Filter {
     void updateCoefficients() {
         // Logarithmic mapping: 0→20 Hz, 0.5→630 Hz, 1.0→20 kHz
         // Gives perceptually even sweep across the audible spectrum.
+        // Coefficient is computed for the 2× OVERSAMPLED rate (see process()):
+        // the filter integrates at 88.2 kHz, which keeps high-resonance sweeps
+        // alias-free and stable instead of screeching near the top.
         float fc = 20.0f * powf(1000.0f, cutoff);
-        f = 2.0f * sinf(PI * fc / (float)SAMPLE_RATE);
+        f = 2.0f * sinf(PI * fc / (2.0f * (float)SAMPLE_RATE));
         f = constrain(f, 0.001f, SVF_FMAX);  // stay well inside stability bound
         // q: damping – SVF_QMIN = max resonance, 1.0 = no resonance
         q = constrain(1.0f - resonance * 0.94f, SVF_QMIN, 1.0f);
         _lastModC = -1.0f;   // base moved → invalidate the modulated cache
+    }
+
+    // Select the active filter band from the current SVF state.
+    inline float pick(float input) const {
+        switch (type) {
+            case FILTER_LOWPASS:  return lp;
+            case FILTER_HIGHPASS: return hp;
+            case FILTER_BANDPASS: return bp;
+            case FILTER_NOTCH:    return lp + hp;
+            default: return input;
+        }
     }
 
     void setCutoff(float freq) {
@@ -269,22 +283,14 @@ struct Filter {
         updateCoefficients();
     }
 
-    // Standard process – uses the static f/q coefficients.
+    // Standard process – uses the static f/q coefficients, 2× oversampled.
     IRAM_ATTR float process(float input) {
-        lp += f * bp;
-        hp  = input - lp - q * bp;
-        bp += f * hp;
-        // Branchless saturation – ARM emits min/max ops with no jumps.
-        lp = fclamp(lp, -2.0f, 2.0f);
-        bp = fclamp(bp, -2.0f, 2.0f);
-        hp = fclamp(hp, -2.0f, 2.0f);
-        switch (type) {
-            case FILTER_LOWPASS:  return lp;
-            case FILTER_HIGHPASS: return hp;
-            case FILTER_BANDPASS: return bp;
-            case FILTER_NOTCH:    return lp + hp;
-            default: return input;
-        }
+        lp += f * bp; hp = input - lp - q * bp; bp += f * hp;
+        lp = fclamp(lp, -2.0f, 2.0f); bp = fclamp(bp, -2.0f, 2.0f); hp = fclamp(hp, -2.0f, 2.0f);
+        float o0 = pick(input);
+        lp += f * bp; hp = input - lp - q * bp; bp += f * hp;
+        lp = fclamp(lp, -2.0f, 2.0f); bp = fclamp(bp, -2.0f, 2.0f); hp = fclamp(hp, -2.0f, 2.0f);
+        return (o0 + pick(input)) * 0.5f;
     }
 
     // Modulated process – applies a one-shot cutoff offset without drifting
@@ -312,24 +318,20 @@ struct Filter {
             // fix for audio dropouts when several voices (chords) are active.
             if (fabsf(modCutoff - _lastModC) > 0.0015f) {
                 float fc   = 20.0f * powf(1000.0f, modCutoff);
-                _fModCache = fclamp(2.0f * sinf(PI * fc / (float)SAMPLE_RATE), 0.001f, SVF_FMAX);
+                _fModCache = fclamp(2.0f * sinf(PI * fc / (2.0f * (float)SAMPLE_RATE)), 0.001f, SVF_FMAX);
                 _lastModC  = modCutoff;
             }
             fMod = _fModCache;
         }
-        lp += fMod * bp;
-        hp  = input - lp - q * bp;
-        bp += fMod * hp;
-        lp = fclamp(lp, -2.0f, 2.0f);
-        bp = fclamp(bp, -2.0f, 2.0f);
-        hp = fclamp(hp, -2.0f, 2.0f);
-        switch (type) {
-            case FILTER_LOWPASS:  return lp;
-            case FILTER_HIGHPASS: return hp;
-            case FILTER_BANDPASS: return bp;
-            case FILTER_NOTCH:    return lp + hp;
-            default: return input;
-        }
+        // 2× oversampled SVF (ZOH input): integrating at 88.2 kHz pushes the
+        // resonant peak's alias products out of band, so high-Q filtering /
+        // self-oscillation stays smooth instead of buzzy/aliased.
+        lp += fMod * bp; hp = input - lp - q * bp; bp += fMod * hp;
+        lp = fclamp(lp, -2.0f, 2.0f); bp = fclamp(bp, -2.0f, 2.0f); hp = fclamp(hp, -2.0f, 2.0f);
+        float o0 = pick(input);
+        lp += fMod * bp; hp = input - lp - q * bp; bp += fMod * hp;
+        lp = fclamp(lp, -2.0f, 2.0f); bp = fclamp(bp, -2.0f, 2.0f); hp = fclamp(hp, -2.0f, 2.0f);
+        return (o0 + pick(input)) * 0.5f;
     }
 };
 
@@ -364,6 +366,8 @@ struct Voice {
     // Velocity → filter brightness (expressive "play harder = brighter").
     float velFilter;        // sensitivity, 0 = off
     float _velCutoff;       // cached velFilter * velocity, added to the cutoff mod
+    // One-pole smoothing state for the stereo-spread side signal.
+    float _sideLP;
 
     inline void setSubLevelCached(float l) {
         subLevel = fclamp(l, 0.0f, 1.0f);
@@ -395,6 +399,7 @@ struct Voice {
         cutoffLock      = 0.0f;
         velFilter       = 0.12f;
         _velCutoff      = 0.0f;
+        _sideLP         = 0.0f;
     }
 
     void noteOn(int n, int vel) {
@@ -435,17 +440,26 @@ struct Voice {
         filterEnv.noteOff();
     }
 
+    // Stereo width from the detune "beat" between osc1 and osc2.  Mono-
+    // compatible (the side cancels when L+R are summed) and cheap.
+    static constexpr float STEREO_SPREAD = 0.35f;
+    static constexpr float SIDE_LP_A     = 0.30f;   // ~2.5 kHz one-pole on the side
+
+    // Renders one stereo sample (pan + width applied) into oL/oR.
     // filterLFOMod: normalized cutoff addition from LFO (-1..+1 * depth)
     // ampLFOMod:    0-centred amplitude scale offset from LFO
-    IRAM_ATTR float process(float filterLFOMod = 0.0f, float ampLFOMod = 0.0f) {
-        if (!active) return 0.0f;
+    IRAM_ATTR void process(float& oL, float& oR,
+                           float filterLFOMod = 0.0f, float ampLFOMod = 0.0f) {
+        if (!active) { oL = 0.0f; oR = 0.0f; return; }
 
-        float oscMix = osc1.process() * osc1Level + osc2.process() * osc2Level;
-        // Sub-osc is fully skipped when its level is below epsilon — zero CPU
-        // cost when the patch doesn't use it.  Cached _subTrim avoids a div
-        // per sample (was: 1.0f / (1.0f + subLevel * 0.6f)).
+        float s1 = osc1.process() * osc1Level;
+        float s2 = osc2.process() * osc2Level;
+        float oscMix = s1 + s2;
+        // Sub-osc skipped below epsilon (zero CPU when unused).  A gentle soft-
+        // clip drive on the sub adds harmonics and perceived low-end weight.
         if (subLevel > 1e-3f) {
-            oscMix += subOsc.process() * subLevel;
+            float sub = softClip(subOsc.process() * 1.5f);
+            oscMix += sub * subLevel;
             oscMix *= _subTrim;
         }
         float envMod   = filterEnv.process() * filterEnvAmount
@@ -456,11 +470,16 @@ struct Voice {
         // Amp LFO multiplier centred at 1.0 (ampLFOMod is -depth..+depth)
         ampEnvOut *= fclamp(1.0f + ampLFOMod, 0.0f, 2.0f);
 
-        float output = filtered * ampEnvOut;
+        float mono = filtered * ampEnvOut;
+        // Side = gently low-passed detune difference (so it isn't harsh),
+        // scaled by the amp env so it fades with the note.
+        _sideLP += SIDE_LP_A * ((s1 - s2) - _sideLP);
+        float side = _sideLP * STEREO_SPREAD * ampEnvOut;
+
+        oL = mono * gainL + side;
+        oR = mono * gainR - side;
 
         if (!ampEnv.isActive()) active = false;
-
-        return output;
     }
 };
 
@@ -1052,9 +1071,11 @@ public:
             float mixL = 0.0f, mixR = 0.0f;
             for (int v = 0; v < MAX_VOICES; v++) {
                 if (voices[v].active || voices[v].ampEnv.isActive()) {
-                    float s = voices[v].process(lfoF, lfoA);
-                    mixL += s * voices[v].gainL;
-                    mixR += s * voices[v].gainR;
+                    // Voice renders its own stereo (pan + detune width applied).
+                    float vL, vR;
+                    voices[v].process(vL, vR, lfoF, lfoA);
+                    mixL += vL;
+                    mixR += vR;
                 }
             }
 

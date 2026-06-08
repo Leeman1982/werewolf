@@ -1,6 +1,18 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.3
+ ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.4
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v3.4 Next-tier sonic upgrades:
+ - 2× OVERSAMPLED state-variable filter: integrates at 88.2 kHz so high-
+   resonance sweeps / self-oscillation stay clean instead of aliasing/buzzing.
+ - UNISON / STEREO SPREAD: each voice derives a mono-compatible stereo "side"
+   from the osc1/osc2 detune beat (gently low-passed), giving real width
+   without smearing the mono sum.  Voices now render their own stereo.
+ - SUB-OSC DRIVE: gentle soft-clip on the sub adds harmonics + low-end weight.
+ - Sequencer ARP-fill now lands in a musical mid range (centred on C4) instead
+   of bottoming out near C1.
+ NOTE: the oversampled filter ~doubles per-voice filter cost — verify no audio
+ dropouts at full 8-voice polyphony on hardware.
 
  v3.3 Sonic-character pass (warmer / less "cheap digital"):
  - Exponential (analog-style) ADSR envelopes replace the linear ramps that
