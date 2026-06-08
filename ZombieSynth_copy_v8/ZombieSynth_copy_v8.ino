@@ -1,6 +1,18 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.2
+ ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.3
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v3.3 Sonic-character pass (warmer / less "cheap digital"):
+ - Exponential (analog-style) ADSR envelopes replace the linear ramps that
+   were the main click/synthetic giveaway.  Natural curved attack/decay/release.
+ - Randomised per-oscillator start phase + tiny per-note pitch drift (±~2 cents)
+   so no two notes are identical — removes the sterile "machine-gun" sameness
+   and lets osc1/osc2 detune beat from the first sample.  No onset clicks
+   (the exponential attack covers them).
+ - Velocity → filter brightness (play harder = brighter) for expressiveness.
+ - Subtle master "warmth" high-shelf rolls a little off the top end so the tone
+   reads as analog rather than digitally brittle.
+ - Chord pad removed.
 
  v3.2 Pro sequencer & FX pass:
  - INDEPENDENT TRACKS: the 8-voice pool is split into per-track windows, so

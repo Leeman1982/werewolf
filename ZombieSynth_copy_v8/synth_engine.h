@@ -158,42 +158,62 @@ struct BLOscillator {
     float process();
 };
 
-// ── ADSR envelope ─────────────────────────────────────────────────────────────
+// ── ADSR envelope (exponential / analog-style) ───────────────────────────────
+// Linear segments are the classic "cheap digital" giveaway — they click and
+// sound synthetic.  This uses the earlevel one-pole exponential ADSR: each
+// stage charges/discharges toward a target through a per-sample coefficient,
+// giving the natural curved shape of an analog RC envelope.  Per-sample cost is
+// one multiply + one add (no more than the old linear version).
 struct Envelope {
     float attack, decay, sustain, release;
     EnvelopeState state;
     float level;
-    float attackRate, decayRate, releaseRate;
+    float attackCoef,  decayCoef,  releaseCoef;
+    float attackBase,  decayBase,  releaseBase;
+
+    // Target ratios set the curvature.  ~0.3 gives a punchy convex attack;
+    // a tiny value makes decay/release a near-pure exponential tail.
+    static constexpr float TR_ATTACK = 0.3f;
+    static constexpr float TR_DR     = 0.0001f;
+
+    static float calcCoef(float rateSamples, float targetRatio) {
+        if (rateSamples <= 0.0f) return 0.0f;   // instant stage
+        return expf(-logf((1.0f + targetRatio) / targetRatio) / rateSamples);
+    }
 
     void init(float a, float d, float s, float r) {
         attack  = a;  decay   = d;
-        sustain = s;  release = r;
+        sustain = fclamp(s, 0.0f, 1.0f);  release = r;
         state   = ENV_IDLE;
         level   = 0.0f;
-        attackRate  = (a > 0.0f) ? (1.0f / (a * SAMPLE_RATE)) : 1.0f;
-        decayRate   = (d > 0.0f) ? ((1.0f - s) / (d * SAMPLE_RATE)) : 1.0f;
-        releaseRate = (r > 0.0f) ? (s / (r * SAMPLE_RATE)) : 1.0f;
+
+        attackCoef  = calcCoef(a * SAMPLE_RATE, TR_ATTACK);
+        attackBase  = (1.0f + TR_ATTACK) * (1.0f - attackCoef);
+        decayCoef   = calcCoef(d * SAMPLE_RATE, TR_DR);
+        decayBase   = (sustain - TR_DR) * (1.0f - decayCoef);
+        releaseCoef = calcCoef(r * SAMPLE_RATE, TR_DR);
+        releaseBase = -TR_DR * (1.0f - releaseCoef);
     }
 
     void noteOn()  { state = ENV_ATTACK; }
-    void noteOff() { state = ENV_RELEASE; }
+    void noteOff() { if (state != ENV_IDLE) state = ENV_RELEASE; }
 
     // IRAM_ATTR: hot per-sample function, pinned in instruction SRAM.
     IRAM_ATTR float process() {
         switch (state) {
             case ENV_ATTACK:
-                level += attackRate;
+                level = attackBase + level * attackCoef;
                 if (level >= 1.0f) { level = 1.0f; state = ENV_DECAY; }
                 break;
             case ENV_DECAY:
-                level -= decayRate;
+                level = decayBase + level * decayCoef;
                 if (level <= sustain) { level = sustain; state = ENV_SUSTAIN; }
                 break;
             case ENV_SUSTAIN:
                 level = sustain;
                 break;
             case ENV_RELEASE:
-                level -= releaseRate;
+                level = releaseBase + level * releaseCoef;
                 if (level <= 0.0f) { level = 0.0f; state = ENV_IDLE; }
                 break;
             case ENV_IDLE:
@@ -341,6 +361,9 @@ struct Voice {
     float gainR;
     // Per-note (P-Lock) filter cutoff offset applied in process().  0 = no lock.
     float cutoffLock;
+    // Velocity → filter brightness (expressive "play harder = brighter").
+    float velFilter;        // sensitivity, 0 = off
+    float _velCutoff;       // cached velFilter * velocity, added to the cutoff mod
 
     inline void setSubLevelCached(float l) {
         subLevel = fclamp(l, 0.0f, 1.0f);
@@ -370,6 +393,8 @@ struct Voice {
         gainL           = 0.7071f;
         gainR           = 0.7071f;
         cutoffLock      = 0.0f;
+        velFilter       = 0.12f;
+        _velCutoff      = 0.0f;
     }
 
     void noteOn(int n, int vel) {
@@ -378,15 +403,28 @@ struct Voice {
         active     = true;
         noteOnTime = millis();
 
-        baseFreq = 440.0f * powf(2.0f, (n - 69.0f) / 12.0f);
-        osc1.reset();
-        osc2.reset();
-        subOsc.reset();
+        // Analog-style pitch drift: a tiny per-note random detune (±~2 cents)
+        // baked into baseFreq so no two notes are perfectly identical — the
+        // subtle imperfection that separates "warm" from "sterile digital".
+        uint32_t r = ((uint32_t)random(0, 65536) << 16) | (uint32_t)random(0, 65536);
+        float drift = ((float)(r & 0xFFFF) - 32768.0f) * (0.0012f / 32768.0f);
+        baseFreq = (440.0f * powf(2.0f, (n - 69.0f) / 12.0f)) * (1.0f + drift);
+
+        // Free-running / randomised start phase (different per oscillator) rather
+        // than a hard reset to 0.  Kills the identical-attack "machine-gun" click
+        // and decorrelates osc1/osc2 so the detune beats from the very first
+        // sample.  The exponential attack envelope keeps note onsets click-free.
+        osc1.phaseQ   = r;
+        osc2.phaseQ   = r * 2654435761u + 1u;
+        subOsc.phaseQ = r * 40503u + 12345u;
         osc1.setFrequency(baseFreq);
         osc2.setFrequency(baseFreq * (1.0f + osc2Detune));
         // Sub-osc: 1 or 2 octaves below
         int subOct = (subOctave < 1) ? 1 : (subOctave > 2 ? 2 : subOctave);
         subOsc.setFrequency(baseFreq * (subOct == 2 ? 0.25f : 0.5f));
+
+        // Cache velocity → cutoff contribution (brighten-only).
+        _velCutoff = velFilter * (vel * (1.0f / 127.0f));
 
         ampEnv.noteOn();
         filterEnv.noteOn();
@@ -411,7 +449,7 @@ struct Voice {
             oscMix *= _subTrim;
         }
         float envMod   = filterEnv.process() * filterEnvAmount
-                       + filterLFOMod + cutoffLock;
+                       + filterLFOMod + cutoffLock + _velCutoff;
         float filtered = filter.processWithMod(oscMix, envMod);
 
         float ampEnvOut = ampEnv.process() * (velocity * (1.0f / 127.0f));
@@ -582,6 +620,12 @@ private:
     DelayFX           _delay;
     MasterLimiter     _limiter;
     bool              _limiterOn;
+    // Master "warmth": gentle one-pole high-shelf cut that rounds off the top
+    // end so the digital edge/fizz doesn't make it sound cheap.  Per-channel
+    // one-pole state.  ~6 kHz corner, highs kept at ~70 % (≈ -3 dB).
+    float _warmL, _warmR;
+    static constexpr float WARM_A    = 0.575f;  // 1 - exp(-2π·6000/44100)
+    static constexpr float WARM_KEEP = 0.70f;   // fraction of high band retained
 
     // LFO modulation amounts (set from UI task, consumed in processAudio)
     float _lfoFilterMod;  // added to normalized cutoff in voice render
@@ -622,6 +666,8 @@ public:
         _lfoFilterMod  = 0.0f;
         _lfoAmpMod     = 0.0f;
         _limiterOn     = true;   // transparent peak control on by default
+        _warmL         = 0.0f;
+        _warmR         = 0.0f;
     }
 
     void init() {
@@ -1026,6 +1072,13 @@ public:
             // Dry pan retained; delay adds its stereo wet on top.
             float outL = mixL + dL;
             float outR = mixR + dR;
+
+            // Master warmth: roll a little off the very top so the tone reads
+            // as "analog/expensive" rather than digitally brittle.
+            _warmL += WARM_A * (outL - _warmL);
+            _warmR += WARM_A * (outR - _warmR);
+            outL = _warmL + (outL - _warmL) * WARM_KEEP;
+            outR = _warmR + (outR - _warmR) * WARM_KEEP;
 
             // Optional master limiter (selectable) tames sustained peaks.
             if (limiterOn) _limiter.process(outL, outR);
