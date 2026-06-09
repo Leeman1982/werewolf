@@ -1,6 +1,17 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.4
+ ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.5
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v3.5 Bass fix + sequencer persistence tidy:
+ - Bass restored: removed the sub-osc soft-clip "drive" that muddied Moog/Reese
+   bass, and made stereo spread pitch-aware (low notes stay mono/centred = fat
+   and punchy, highs keep width).
+ - PTRN page de-crammed into two sub-tabs: BANK (8 pattern slots + COPY/PASTE +
+   one-tap SAVE/LOAD with saved-to-NVS dots) and TOOLS (chain, randomise,
+   clear, ARP>SEQ fill).  Bigger, roomier buttons.
+ - Pattern SAVE/LOAD is now non-modal: each PAT slot saves/loads its own NVS
+   slot 1:1 (no more "tap SAVE then pick a slot").  LOAD and CLEAR ask "SURE?".
+ - SONG slots show a "!" when they point at an empty pattern (would play silent).
 
  v3.4 Next-tier sonic upgrades:
  - 2× OVERSAMPLED state-variable filter: integrates at 88.2 kHz so high-

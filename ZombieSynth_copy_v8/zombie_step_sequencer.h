@@ -671,6 +671,18 @@ public:
     return patterns[activePattern].tracks[t].steps[s].active;
   }
 
+  // True if pattern bank `p` has at least one active step on any track.  Used to
+  // warn when a SONG slot points at an empty pattern (which would play silent).
+  bool patternHasContent(int p) {
+    if (p < 0 || p >= MAX_PATTERNS) return false;
+    for (int t = 0; t < MAX_SEQ_TRACKS; t++) {
+      SequencerTrack& tr = patterns[p].tracks[t];
+      for (int s = 0; s < tr.length; s++)
+        if (tr.steps[s].active) return true;
+    }
+    return false;
+  }
+
   // ── Storage: NVS (always) + optional SD card ─────────────────────────────
   // Patterns/songs are serialized once (packed form), then dispatched to
   // whichever backend is active.  SD is opt-in via -DUSE_SD_STORAGE.  When

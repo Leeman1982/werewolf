@@ -33,9 +33,32 @@ static int  seqTrackSubTab    = 0;   // TRCK sub-page: 0=SOUND 1=MIX
 static int  seqEditSubTab     = 0;   // EDIT sub-page: 0=STEP 1=PLOCK
 static int  seqSongSlotIdx    = 0;   // selected slot in SONG tab editor
 static int  seqSongSaveSlot   = 0;   // currently loaded/saved song slot (0..7)
-static int  seqPatSaveSlot    = -1;  // last-touched pattern slot for save/load
-// Pending NVS action: "" / "save_pat" / "load_pat" picker overlay
-static int  seqPendingPatAction = 0; // 0=none, 1=save, 2=load (waits for slot pick)
+static int  seqPtrnSubTab     = 0;   // PTRN sub-page: 0=BANK 1=TOOLS
+
+// ── Two-tap confirm for destructive actions ──────────────────────────────────
+// First tap arms (button shows "SURE?"), a second tap of the SAME control within
+// the timeout commits; any timeout cancels.
+static int           seqArmedAction = 0;     // 0 = none; else an action id below
+static unsigned long seqArmedMs     = 0;
+static const unsigned long SEQ_ARM_TIMEOUT = 3000;
+#define SEQ_ARM_LOAD    1
+#define SEQ_ARM_CLRPAT  2
+
+// Returns true when the action is confirmed (this is the 2nd tap in time).
+static bool seqConfirm(int actionId) {
+  unsigned long now = millis();
+  if (seqArmedAction == actionId && (now - seqArmedMs) < SEQ_ARM_TIMEOUT) {
+    seqArmedAction = 0;
+    return true;
+  }
+  seqArmedAction = actionId;
+  seqArmedMs     = now;
+  return false;
+}
+static inline bool seqArmed(int actionId) {
+  return seqArmedAction == actionId &&
+         (millis() - seqArmedMs) < SEQ_ARM_TIMEOUT;
+}
 
 // ── Note-on / note-off callbacks ──────────────────────────────────────────────
 // Each track fires into its own private voice window with its own patch, so
@@ -735,127 +758,113 @@ static void seqDoArpFill(int trackIdx, int arpPatIdx) {
 // ─────────────────────────────────────────────────────────────────────────────
 // PTRN TAB – pattern management
 // ─────────────────────────────────────────────────────────────────────────────
-static void seqDrawPattern() {
-  if (!seqNeedsRedraw) return;
-  tft.fillRect(0, 72, 320, 128, THEME_BG);
+// Big labelled button helper (filled, optional WARNING/armed colour).
+static void seqBigBtn(int x, int y, int w, int h, const char* lbl,
+                      bool armed = false, bool primary = false) {
+  uint16_t bg  = armed ? THEME_WARNING : (primary ? THEME_PRIMARY : THEME_BG);
+  uint16_t txt = (armed || primary) ? THEME_BG : THEME_PRIMARY;
+  tft.fillRoundRect(x, y, w, h, 4, bg);
+  tft.drawRoundRect(x, y, w, h, 4, THEME_OUTLINE);
+  tft.setTextColor(txt, bg);
+  tft.drawCentreString(armed ? "SURE?" : lbl, x + w/2, y + (h-13)/2, 2);
+}
 
-  // 8 pattern buttons – 2 rows of 4 (y=73..120, h=24 per row, gap=2)
+// PTRN sub-tab bar (BANK | TOOLS) at y=72..86, mirrors the TRCK sub-tabs.
+static void seqDrawPtrnSubTabs() {
+  static const char* names[2] = {"BANK", "TOOLS"};
+  for (int i = 0; i < 2; i++) {
+    bool sel = (i == seqPtrnSubTab);
+    uint16_t bg  = sel ? THEME_ACCENT : THEME_BG;
+    uint16_t txt = sel ? THEME_BG : THEME_PRIMARY;
+    tft.fillRect(i*160, 72, 160, 14, bg);
+    tft.drawRect(i*160, 72, 160, 14, THEME_OUTLINE);
+    tft.setTextColor(txt, bg);
+    tft.drawCentreString(names[i], i*160+80, 74, 2);
+  }
+}
+
+// BANK sub-tab: 8 pattern slots (saved-dot + state) + COPY/PASTE + SAVE/LOAD.
+static void seqDrawPtrnBank() {
   for (int p = 0; p < MAX_PATTERNS; p++) {
     int col = p % 4, row = p / 4;
     int px  = 4 + col * 78;
-    int py  = 73 + row * 26;
-    bool isCurrent  = (p == zombieSeq->activePattern);
-    bool isNext     = (p == zombieSeq->nextPattern);
-    bool isCopySrc  = (p == seqCopyPat);
+    int py  = 89 + row * 28;          // rows at y=89, 117 (h=26)
+    bool isCurrent = (p == zombieSeq->activePattern);
+    bool isNext    = (p == zombieSeq->nextPattern);
+    bool isCopySrc = (p == seqCopyPat);
 
-    uint16_t bg  = isCurrent  ? THEME_PRIMARY :
-                   isNext     ? THEME_SECONDARY :
-                   isCopySrc  ? THEME_SURFACE : THEME_BG;
-    uint16_t brd = isCurrent  ? THEME_ACCENT :
-                   isNext     ? THEME_PRIMARY : THEME_OUTLINE;
-    uint16_t txt = isCurrent  ? THEME_BG : THEME_PRIMARY;
+    uint16_t bg  = isCurrent ? THEME_PRIMARY :
+                   isNext    ? THEME_SECONDARY :
+                   isCopySrc ? THEME_SURFACE : THEME_BG;
+    uint16_t brd = isCurrent ? THEME_ACCENT :
+                   isNext    ? THEME_PRIMARY : THEME_OUTLINE;
+    uint16_t txt = isCurrent ? THEME_BG : THEME_PRIMARY;
 
-    tft.fillRoundRect(px, py, 76, 24, 4, bg);
-    tft.drawRoundRect(px, py, 76, 24, 4, brd);
+    tft.fillRoundRect(px, py, 76, 26, 4, bg);
+    tft.drawRoundRect(px, py, 76, 26, 4, brd);
     tft.setTextColor(txt, bg);
-    char pbuf[10];
-    snprintf(pbuf, sizeof(pbuf), "PAT %d", p+1);
-    tft.drawCentreString(pbuf, px+38, py+2, 2);
-    if (isNext) {
-      tft.setTextColor(THEME_ACCENT, bg);
-      tft.drawCentreString("NEXT", px+38, py+13, 2);
-    } else if (isCopySrc) {
-      tft.setTextColor(THEME_TEXT_DIM, bg);
-      tft.drawCentreString("SRC", px+38, py+13, 2);
-    }
+    char pbuf[10]; snprintf(pbuf, sizeof(pbuf), "PAT %d", p+1);
+    tft.drawCentreString(pbuf, px+38, py+3, 2);
+    if (isNext)         { tft.setTextColor(THEME_ACCENT, bg);   tft.drawCentreString("NEXT", px+38, py+14, 2); }
+    else if (isCopySrc) { tft.setTextColor(THEME_TEXT_DIM, bg); tft.drawCentreString("SRC",  px+38, py+14, 2); }
+    // Saved-to-NVS dot (top-right corner)
+    if (zombieSeq->isPatternSaved(p))
+      tft.fillCircle(px+70, py+6, 3, THEME_SUCCESS);
   }
 
-  // COPY / PASTE / CLR (y=127..144, h=17)
-  tft.fillRoundRect(4, 127, 118, 17, 4, THEME_BG);
-  tft.drawRoundRect(4, 127, 118, 17, 4, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("COPY PAT", 63, 130, 2);
-
+  // COPY / PASTE (y=147, h=22)
+  seqBigBtn(4, 147, 150, 22, "COPY PAT");
   bool canPaste = (seqCopyPat >= 0 && seqCopyPat != zombieSeq->activePattern);
-  uint16_t pastBg = canPaste ? THEME_BG : THEME_SURFACE;
-  tft.fillRoundRect(126, 127, 118, 17, 4, pastBg);
-  tft.drawRoundRect(126, 127, 118, 17, 4, canPaste ? THEME_OUTLINE : THEME_TEXT_DIM);
-  tft.setTextColor(canPaste ? THEME_PRIMARY : THEME_TEXT_DIM, pastBg);
-  tft.drawCentreString("PASTE HERE", 185, 130, 2);
+  if (canPaste) {
+    seqBigBtn(166, 147, 150, 22, "PASTE");
+  } else {
+    tft.fillRoundRect(166, 147, 150, 22, 4, THEME_SURFACE);
+    tft.drawRoundRect(166, 147, 150, 22, 4, THEME_TEXT_DIM);
+    tft.setTextColor(THEME_TEXT_DIM, THEME_SURFACE);
+    tft.drawCentreString("PASTE", 241, 151, 2);
+  }
 
-  tft.fillRoundRect(248, 127, 68, 17, 4, THEME_BG);
-  tft.drawRoundRect(248, 127, 68, 17, 4, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("CLR PAT", 282, 130, 2);
+  // SAVE / LOAD this bank to/from its own NVS slot (y=173, h=22)
+  seqBigBtn(4,   173, 150, 22, "SAVE");
+  seqBigBtn(166, 173, 150, 22, "LOAD", seqArmed(SEQ_ARM_LOAD));
+}
 
-  // CHAIN: next pattern selector + SAVE/LOAD (y=148..162, h=14)
+// TOOLS sub-tab: CHAIN, randomise, clear-pattern, ARP>SEQ fill.
+static void seqDrawPtrnTools() {
+  // CHAIN next-pattern selector (y=90, h=22)
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-  tft.drawString("CHAIN:", 4, 150, 2);
-  tft.fillRoundRect(55, 148, 20, 14, 3, THEME_BG);
-  tft.drawRoundRect(55, 148, 20, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("<", 65, 150, 2);
+  tft.drawString("CHAIN", 6, 96, 2);
+  seqBigBtn(70, 90, 30, 22, "<");
   char chainBuf[8];
-  if (zombieSeq->nextPattern < 0)
-    snprintf(chainBuf, sizeof(chainBuf), "NONE");
-  else
-    snprintf(chainBuf, sizeof(chainBuf), "PAT%d", zombieSeq->nextPattern+1);
+  if (zombieSeq->nextPattern < 0) snprintf(chainBuf, sizeof(chainBuf), "NONE");
+  else                            snprintf(chainBuf, sizeof(chainBuf), "PAT %d", zombieSeq->nextPattern+1);
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString(chainBuf, 140, 150, 2);
-  tft.fillRoundRect(180, 148, 20, 14, 3, THEME_BG);
-  tft.drawRoundRect(180, 148, 20, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString(">", 190, 150, 2);
+  tft.drawCentreString(chainBuf, 162, 96, 2);
+  seqBigBtn(224, 90, 30, 22, ">");
 
-  // SAVE PAT / LOAD PAT (x=204..317)
-  uint16_t saveBg = (seqPendingPatAction == 1) ? THEME_WARNING : THEME_BG;
-  tft.fillRoundRect(204, 148, 54, 14, 3, saveBg);
-  tft.drawRoundRect(204, 148, 54, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(seqPendingPatAction == 1 ? THEME_BG : THEME_PRIMARY, saveBg);
-  tft.drawCentreString("SAVE", 231, 150, 2);
-  uint16_t loadBg = (seqPendingPatAction == 2) ? THEME_WARNING : THEME_BG;
-  tft.fillRoundRect(262, 148, 54, 14, 3, loadBg);
-  tft.drawRoundRect(262, 148, 54, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(seqPendingPatAction == 2 ? THEME_BG : THEME_PRIMARY, loadBg);
-  tft.drawCentreString("LOAD", 289, 150, 2);
+  // RND TRACK / RND ALL (y=118, h=22)
+  seqBigBtn(4,   118, 150, 22, "RND TRACK");
+  seqBigBtn(166, 118, 150, 22, "RND ALL");
 
-  // RAND / CLR ALL (y=166..178, h=12)
-  tft.fillRoundRect(4, 166, 95, 12, 3, THEME_BG);
-  tft.drawRoundRect(4, 166, 95, 12, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("RND TRACK", 51, 167, 2);
+  // CLR PATTERN (2-tap confirm) (y=146, h=22)
+  seqBigBtn(4, 146, 150, 22, "CLR PATTERN", seqArmed(SEQ_ARM_CLRPAT));
 
-  tft.fillRoundRect(103, 166, 95, 12, 3, THEME_BG);
-  tft.drawRoundRect(103, 166, 95, 12, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("RND ALL", 150, 167, 2);
-
-  tft.fillRoundRect(202, 166, 113, 12, 3, THEME_BG);
-  tft.drawRoundRect(202, 166, 113, 12, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("CLR ALL TRACKS", 258, 167, 2);
-
-  // ARP→SEQ fill row (y=181..197, h=16)
+  // ARP > SEQ fill: pick an arp pattern then fill the edit track (y=174, h=22)
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-  tft.drawString("ARP>SEQ:", 3, 183, 2);
-  // < arp pattern
-  tft.fillRoundRect(67, 181, 18, 14, 3, THEME_BG);
-  tft.drawRoundRect(67, 181, 18, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("<", 76, 183, 2);
-  // arp pattern name
+  tft.drawString("ARP>SEQ", 166, 152, 2);
+  seqBigBtn(4, 174, 24, 22, "<");
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString(arpPatternNames[seqArpPatIdx], 148, 183, 2);
-  // > arp pattern
-  tft.fillRoundRect(207, 181, 18, 14, 3, THEME_BG);
-  tft.drawRoundRect(207, 181, 18, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString(">", 216, 183, 2);
-  // FILL TRACK button
-  tft.fillRoundRect(229, 181, 88, 14, 3, THEME_PRIMARY);
-  tft.drawRoundRect(229, 181, 88, 14, 3, THEME_OUTLINE);
-  tft.setTextColor(THEME_BG, THEME_PRIMARY);
-  tft.drawCentreString("FILL TRACK", 273, 183, 2);
+  tft.drawCentreString(arpPatternNames[seqArpPatIdx], 116, 180, 2);
+  seqBigBtn(200, 174, 24, 22, ">");
+  seqBigBtn(228, 174, 88, 22, "FILL TRK", false, true);
+}
+
+static void seqDrawPattern() {
+  if (!seqNeedsRedraw) return;
+  tft.fillRect(0, 72, 320, 128, THEME_BG);
+  seqDrawPtrnSubTabs();
+  if (seqPtrnSubTab == 0) seqDrawPtrnBank();
+  else                    seqDrawPtrnTools();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -935,10 +944,16 @@ static void seqDrawSong() {
     tft.drawRoundRect(34, ry, 18, 14, 3, THEME_OUTLINE);
     tft.setTextColor(THEME_PRIMARY, rowBg);
     tft.drawCentreString("-", 43, ry, 2);
-    // Pattern label
+    // Pattern label — a dim "!" warns when this slot points at an empty
+    // pattern (it would play silent).
     char pb[10]; snprintf(pb, sizeof(pb), "PAT %d", song.slots[idx].patternIdx + 1);
+    bool emptyPat = !zombieSeq->patternHasContent(song.slots[idx].patternIdx);
     tft.setTextColor(THEME_ACCENT, rowBg);
-    tft.drawCentreString(pb, 95, ry, 2);
+    tft.drawCentreString(pb, 92, ry, 2);
+    if (emptyPat) {
+      tft.setTextColor(THEME_WARNING, rowBg);
+      tft.drawString("!", 124, ry, 2);
+    }
     // PAT+
     tft.fillRoundRect(138, ry, 18, 14, 3, rowBg);
     tft.drawRoundRect(138, ry, 18, 14, 3, THEME_OUTLINE);
@@ -1696,91 +1711,78 @@ static void seqTouchTrack() {
 }
 
 static void seqTouchPattern() {
-  // Pattern buttons (2 rows, h=24, row spacing 26)
-  for (int p = 0; p < MAX_PATTERNS; p++) {
-    int col = p % 4, row = p / 4;
-    int px = 4 + col * 78, py = 73 + row * 26;
-    if (isButtonPressed(px, py, 76, 24)) {
-      // If a save/load is pending, this tap picks the slot
-      if (seqPendingPatAction == 1) {
-        zombieSeq->savePattern(p);
-        seqPatSaveSlot = p;
-        seqPendingPatAction = 0;
-      } else if (seqPendingPatAction == 2) {
-        if (zombieSeq->loadPattern(p)) {
-          zombieSeq->activePattern = p;
-          seqPatSaveSlot = p;
-        }
-        seqPendingPatAction = 0;
-      } else if (zombieSeq->getIsPlaying()) {
-        zombieSeq->nextPattern = p;
-      } else {
-        zombieSeq->activePattern = p;
-      }
-      seqNeedsRedraw = true; return;
+  // Sub-tab bar (y=72..86)
+  for (int i = 0; i < 2; i++) {
+    if (isButtonPressed(i*160, 72, 160, 14)) {
+      seqPtrnSubTab = i; seqArmedAction = 0; seqNeedsRedraw = true; return;
     }
   }
-  // SAVE PAT / LOAD PAT buttons (y=148)
-  if (isButtonPressed(204, 148, 54, 14)) {
-    seqPendingPatAction = (seqPendingPatAction == 1) ? 0 : 1;
+
+  if (seqPtrnSubTab == 0) {
+    // ── BANK ──────────────────────────────────────────────────────────────
+    for (int p = 0; p < MAX_PATTERNS; p++) {
+      int col = p % 4, row = p / 4;
+      int px = 4 + col*78, py = 89 + row*28;
+      if (isButtonPressed(px, py, 76, 26)) {
+        // Select (or queue, while playing) the pattern bank.
+        if (zombieSeq->getIsPlaying()) zombieSeq->nextPattern = p;
+        else                           zombieSeq->activePattern = p;
+        seqArmedAction = 0; seqNeedsRedraw = true; return;
+      }
+    }
+    // COPY active bank to clipboard
+    if (isButtonPressed(4, 147, 150, 22)) {
+      seqCopyPat = zombieSeq->activePattern; seqNeedsRedraw = true; return;
+    }
+    // PASTE clipboard into active bank
+    if (isButtonPressed(166, 147, 150, 22) &&
+        seqCopyPat >= 0 && seqCopyPat != zombieSeq->activePattern) {
+      zombieSeq->copyPattern(seqCopyPat, zombieSeq->activePattern);
+      seqCopyPat = -1; seqNeedsRedraw = true; return;
+    }
+    // SAVE active bank → its own NVS slot (one tap; non-destructive)
+    if (isButtonPressed(4, 173, 150, 22)) {
+      zombieSeq->savePattern(zombieSeq->activePattern);
+      seqNeedsRedraw = true; return;
+    }
+    // LOAD active bank ← its NVS slot (2-tap; discards unsaved edits)
+    if (isButtonPressed(166, 173, 150, 22)) {
+      if (seqConfirm(SEQ_ARM_LOAD)) zombieSeq->loadPattern(zombieSeq->activePattern);
+      seqNeedsRedraw = true; return;
+    }
+    return;
+  }
+
+  // ── TOOLS ───────────────────────────────────────────────────────────────
+  if (isButtonPressed(70, 90, 30, 22)) {   // CHAIN <
+    zombieSeq->nextPattern = (zombieSeq->nextPattern <= 0) ? -1 : zombieSeq->nextPattern - 1;
     seqNeedsRedraw = true; return;
   }
-  if (isButtonPressed(262, 148, 54, 14)) {
-    seqPendingPatAction = (seqPendingPatAction == 2) ? 0 : 2;
-    seqNeedsRedraw = true; return;
-  }
-  // COPY (x=4, y=127)
-  if (isButtonPressed(4, 127, 118, 17)) {
-    seqCopyPat = zombieSeq->activePattern; seqNeedsRedraw = true; return;
-  }
-  // PASTE (x=126, y=127)
-  if (isButtonPressed(126, 127, 118, 17) &&
-      seqCopyPat >= 0 && seqCopyPat != zombieSeq->activePattern) {
-    zombieSeq->copyPattern(seqCopyPat, zombieSeq->activePattern);
-    seqCopyPat = -1; seqNeedsRedraw = true; return;
-  }
-  // CLR PAT (x=248, y=127)
-  if (isButtonPressed(248, 127, 68, 17)) {
-    for (int t = 0; t < MAX_SEQ_TRACKS; t++)
-      zombieSeq->clearTrack(t);
-    seqNeedsRedraw = true; return;
-  }
-  // CHAIN < (x=55, y=148)
-  if (isButtonPressed(55, 148, 20, 14)) {
-    zombieSeq->nextPattern = (zombieSeq->nextPattern <= 0) ? -1 :
-                              zombieSeq->nextPattern - 1;
-    seqNeedsRedraw = true; return;
-  }
-  // CHAIN > (x=180, y=148)
-  if (isButtonPressed(180, 148, 20, 14)) {
+  if (isButtonPressed(224, 90, 30, 22)) {  // CHAIN >
     zombieSeq->nextPattern = constrain(zombieSeq->nextPattern + 1, 0, MAX_PATTERNS-1);
     seqNeedsRedraw = true; return;
   }
-  // RND TRACK (x=4, y=166)
-  if (isButtonPressed(4, 166, 95, 12)) {
+  if (isButtonPressed(4, 118, 150, 22)) {  // RND TRACK
     zombieSeq->randomizeTrack(seqEditTrack); seqNeedsRedraw = true; return;
   }
-  // RND ALL (x=103, y=166)
-  if (isButtonPressed(103, 166, 95, 12)) {
+  if (isButtonPressed(166, 118, 150, 22)) {// RND ALL
     for (int t = 0; t < MAX_SEQ_TRACKS; t++) zombieSeq->randomizeTrack(t);
     seqNeedsRedraw = true; return;
   }
-  // CLR ALL (x=202, y=166)
-  if (isButtonPressed(202, 166, 113, 12)) {
-    zombieSeq->clearAll(); seqNeedsRedraw = true; return;
+  if (isButtonPressed(4, 146, 150, 22)) {  // CLR PATTERN (2-tap)
+    if (seqConfirm(SEQ_ARM_CLRPAT))
+      for (int t = 0; t < MAX_SEQ_TRACKS; t++) zombieSeq->clearTrack(t);
+    seqNeedsRedraw = true; return;
   }
-  // ARP < (x=67, y=181)
-  if (isButtonPressed(67, 181, 18, 14)) {
+  if (isButtonPressed(4, 174, 24, 22)) {   // ARP <
     seqArpPatIdx = (seqArpPatIdx - 1 + NUM_ARP_PATTERNS) % NUM_ARP_PATTERNS;
     seqNeedsRedraw = true; return;
   }
-  // ARP > (x=207, y=181)
-  if (isButtonPressed(207, 181, 18, 14)) {
+  if (isButtonPressed(200, 174, 24, 22)) { // ARP >
     seqArpPatIdx = (seqArpPatIdx + 1) % NUM_ARP_PATTERNS;
     seqNeedsRedraw = true; return;
   }
-  // FILL TRACK (x=229, y=181)
-  if (isButtonPressed(229, 181, 88, 14)) {
+  if (isButtonPressed(228, 174, 88, 22)) { // FILL TRK
     seqDoArpFill(seqEditTrack, seqArpPatIdx);
     seqNeedsRedraw = true; return;
   }
@@ -2016,7 +2018,8 @@ void zombieSeqInit() {
   seqSynthSubTab    = 0;
   seqSynthPresetIdx = 0;
   seqTrackSubTab    = 0;
-  seqPendingPatAction  = 0;
+  seqPtrnSubTab     = 0;
+  seqArmedAction    = 0;
   seqPendingSongAction = false;
   songVisibleStart  = 0;
 
