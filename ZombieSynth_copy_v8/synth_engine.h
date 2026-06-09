@@ -368,6 +368,9 @@ struct Voice {
     float _velCutoff;       // cached velFilter * velocity, added to the cutoff mod
     // One-pole smoothing state for the stereo-spread side signal.
     float _sideLP;
+    // Per-note "bass mono" scaler: low notes stay centred (fat/punchy), only
+    // mids/highs get stereo width.  0 = mono, 1 = full spread.
+    float _spreadScale;
 
     inline void setSubLevelCached(float l) {
         subLevel = fclamp(l, 0.0f, 1.0f);
@@ -400,6 +403,7 @@ struct Voice {
         velFilter       = 0.12f;
         _velCutoff      = 0.0f;
         _sideLP         = 0.0f;
+        _spreadScale    = 0.0f;
     }
 
     void noteOn(int n, int vel) {
@@ -431,6 +435,9 @@ struct Voice {
         // Cache velocity → cutoff contribution (brighten-only).
         _velCutoff = velFilter * (vel * (1.0f / 127.0f));
 
+        // Bass-mono: notes ≤ C3 (48) play centred; ≥ C5 (72) get full width.
+        _spreadScale = fclamp((n - 48.0f) * (1.0f / 24.0f), 0.0f, 1.0f);
+
         ampEnv.noteOn();
         filterEnv.noteOn();
     }
@@ -442,7 +449,7 @@ struct Voice {
 
     // Stereo width from the detune "beat" between osc1 and osc2.  Mono-
     // compatible (the side cancels when L+R are summed) and cheap.
-    static constexpr float STEREO_SPREAD = 0.35f;
+    static constexpr float STEREO_SPREAD = 0.30f;
     static constexpr float SIDE_LP_A     = 0.30f;   // ~2.5 kHz one-pole on the side
 
     // Renders one stereo sample (pan + width applied) into oL/oR.
@@ -455,11 +462,11 @@ struct Voice {
         float s1 = osc1.process() * osc1Level;
         float s2 = osc2.process() * osc2Level;
         float oscMix = s1 + s2;
-        // Sub-osc skipped below epsilon (zero CPU when unused).  A gentle soft-
-        // clip drive on the sub adds harmonics and perceived low-end weight.
+        // Sub-osc skipped below epsilon (zero CPU when unused).  Kept CLEAN — a
+        // soft-clip "drive" here muddied/distorted heavy subs (Moog/Reese bass);
+        // weight comes from level, not distortion.
         if (subLevel > 1e-3f) {
-            float sub = softClip(subOsc.process() * 1.5f);
-            oscMix += sub * subLevel;
+            oscMix += subOsc.process() * subLevel;
             oscMix *= _subTrim;
         }
         float envMod   = filterEnv.process() * filterEnvAmount
@@ -474,7 +481,7 @@ struct Voice {
         // Side = gently low-passed detune difference (so it isn't harsh),
         // scaled by the amp env so it fades with the note.
         _sideLP += SIDE_LP_A * ((s1 - s2) - _sideLP);
-        float side = _sideLP * STEREO_SPREAD * ampEnvOut;
+        float side = _sideLP * (STEREO_SPREAD * _spreadScale) * ampEnvOut;
 
         oL = mono * gainL + side;
         oR = mono * gainR - side;
