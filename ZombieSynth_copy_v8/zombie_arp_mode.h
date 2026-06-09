@@ -12,19 +12,21 @@ static Arpeggiator* zombieArp = NULL;
 static int arpPatternPage = 0;
 static bool arpRunning = false;
 static bool arpNeedsRedraw = true;
+// Gate bookkeeping: the note we triggered last step, and when its gate closes.
+static int           arpLastNote   = -1;
+static unsigned long arpGateOffMs  = 0;
 
 void zombieArpInit() {
   if (zombieArp == NULL) {
     zombieArp = new Arpeggiator();
+    // Defaults only on first construction — re-entering the mode keeps the
+    // user's BPM / pattern / octave / gate settings.
+    zombieArp->setBPM(120.0f);
+    zombieArp->setPattern(ARP_UP);
+    zombieArp->setOctaveRange(2);
+    zombieArp->setGateLength(80);
   }
 
-  zombieArp->setBPM(120.0f);
-  zombieArp->setPattern(ARP_UP);
-  zombieArp->setOctaveRange(2);
-  zombieArp->setGateLength(80);
-
-  arpPatternPage = 0;
-  arpRunning = false;
   arpNeedsRedraw = true;
 
   tft.fillScreen(THEME_BG);
@@ -167,6 +169,7 @@ void zombieArpHandleTouch() {
     if (!arpRunning) {
       zombieArp->allNotesOff();
       if (getZombieSynth()) getZombieSynth()->allNotesOff();
+      arpLastNote = -1;
     }
     arpNeedsRedraw = true;
   }
@@ -174,10 +177,33 @@ void zombieArpHandleTouch() {
 
 void zombieArpUpdate() {
   if (!zombieArp || !arpRunning) return;
-  int note = zombieArp->update(millis());
-  if (note >= 0 && getZombieSynth()) {
-    getZombieSynth()->noteOn(note, 100);
+  unsigned long now = millis();
+
+  // Gate: close the previous arp note when its gate time elapses.  Without
+  // this, arp notes were never released — voices droned and piled up until
+  // voice-stealing chaos.
+  if (arpLastNote >= 0 && (long)(now - arpGateOffMs) >= 0) {
+    if (getZombieSynth()) getZombieSynth()->noteOff(arpLastNote);
+    arpLastNote = -1;
   }
+
+  int note = zombieArp->update(now);
+  if (note >= 0 && getZombieSynth()) {
+    if (arpLastNote >= 0) getZombieSynth()->noteOff(arpLastNote);  // legato cut
+    getZombieSynth()->noteOn(note, 100);
+    arpLastNote = note;
+    // Gate closes after gateLength% of one 16th-note step.
+    unsigned long stepMs = (unsigned long)((60000.0f / zombieArp->getBPM()) / 4.0f);
+    arpGateOffMs = now + (stepMs * (unsigned long)zombieArp->getGateLength()) / 100UL;
+    extern int lastPlayedMidiNote;
+    lastPlayedMidiNote = note;
+  }
+}
+
+// True while the arp is actively running (used by the MIDI handler so held
+// keys feed the arp instead of also droning as direct notes).
+bool isZombieArpRunning() {
+  return arpRunning && zombieArp != NULL;
 }
 
 Arpeggiator* getZombieArp() {

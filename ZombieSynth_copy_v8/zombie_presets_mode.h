@@ -20,6 +20,9 @@ static bool  presetNeedsRedraw= true;
 static bool  presetsInited    = false;
 
 static NameKeyboard nameKb;
+// True while the keyboard is open for RENAME: keep the stored patch data and
+// change only its name.  False = SAVE HERE (capture the live synth state).
+static bool nameKbRenameOnly = false;
 
 void zombiePresetsInit() {
   if (!presetsInited) {
@@ -105,9 +108,17 @@ void zombiePresetsHandleTouch() {
   if (nameKb.active) {
     if (nameKb.handleTouch(touch.x, touch.y)) {
       if (nameKb.done) {
-        // Save with new name
         SynthPatch p;
-        collectSynthPatch(p, nameKb.text);
+        if (nameKbRenameOnly) {
+          // RENAME: keep the stored patch, change only its name (previously
+          // this overwrote the patch with the live synth state).
+          p = *presetMgr.getPatch(presetSelected);
+          strncpy(p.name, nameKb.text, PRESET_NAME_LEN);
+          p.name[PRESET_NAME_LEN] = '\0';
+        } else {
+          // SAVE HERE: capture the live synth state under the new name.
+          collectSynthPatch(p, nameKb.text);
+        }
         presetMgr.saveUserPreset(presetSelected, p);
         tft.fillScreen(THEME_BG);
       }
@@ -144,6 +155,7 @@ void zombiePresetsHandleTouch() {
 
   // SAVE HERE
   if (isButtonPressed(102, 207, 108, 28) && presetSelected >= NUM_FACTORY) {
+    nameKbRenameOnly = false;
     nameKb.open(presetMgr.getName(presetSelected));
     presetNeedsRedraw = true;
     return;
@@ -151,6 +163,7 @@ void zombiePresetsHandleTouch() {
 
   // RENAME
   if (isButtonPressed(214, 207, 100, 28) && presetSelected >= NUM_FACTORY) {
+    nameKbRenameOnly = true;
     nameKb.open(presetMgr.getName(presetSelected));
     presetNeedsRedraw = true;
     return;
@@ -204,6 +217,11 @@ void applySynthPatch(const SynthPatch& p) {
   synth->setAmpEnvelope(p.ampAttack, p.ampDecay, p.ampSustain, p.ampRelease);
   synth->setFilterEnvelope(p.filterAttack, p.filterDecay, p.filterSustain, p.filterRelease);
   synth->setMasterVolume(p.masterVolume);
+  // Sub-oscillator — without these, bass presets (Moog/Reese) lost their sub
+  // entirely when loaded from this page.
+  synth->setSubWaveform((WaveformType)p.subWave);
+  synth->setSubLevel(p.subLevel);
+  synth->setSubOctave(p.subOctave);
 }
 
 // Collect current synth state into a patch struct
@@ -232,6 +250,12 @@ void collectSynthPatch(SynthPatch& p, const char* name) {
   p.lfoDepth       = globalLFO.depth;
   p.lfoTarget      = (int)globalLFO.target;
   p.masterVolume   = synthParams.masterVolume;
+  // Sub-oscillator from the engine — these were previously left UNINITIALISED,
+  // so saved user presets carried stack garbage in the sub fields.
+  SynthEngine* se = getZombieSynth();
+  p.subWave   = se ? (int)se->getSubWaveform() : WAVE_SQUARE;
+  p.subLevel  = se ? se->getSubLevel()         : 0.0f;
+  p.subOctave = se ? se->getSubOctave()        : 1;
 }
 
 #endif

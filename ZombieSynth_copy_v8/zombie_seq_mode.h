@@ -1365,6 +1365,11 @@ void zombieSeqDraw() {
 
   bool stepChanged    = (seqTab == 0) && (curStep != seqLastStep);
   bool playingChanged = (playing != seqLastPlaying);
+  // SONG page: keep the playing-slot marker (*) live as the song advances.
+  static int seqLastSongSlot = -1;
+  bool songChanged = (seqTab == 5) && zombieSeq->songMode &&
+                     (zombieSeq->songSlotIdx != seqLastSongSlot);
+  if (songChanged) { seqLastSongSlot = zombieSeq->songSlotIdx; seqNeedsRedraw = true; }
 
   if (!seqNeedsRedraw && !stepChanged && !playingChanged) return;
 
@@ -1949,6 +1954,7 @@ void zombieSeqHandleTouch() {
     if (isButtonPressed(i*SEQ_TAB_W, 50, SEQ_TAB_W, 22)) {
       if (i != seqTab) {
         seqTab = i; seqNeedsRedraw = true;
+        seqArmedAction = 0;   // leaving a page disarms any pending "SURE?"
         tft.fillRect(0, 72, 320, 128, THEME_BG);
       }
       return;
@@ -1970,7 +1976,30 @@ void zombieSeqHandleTouch() {
 }
 
 void zombieSeqUpdate() {
-  if (zombieSeq) zombieSeq->update(millis());
+  if (!zombieSeq) return;
+  zombieSeq->update(millis());
+
+  // Hold-to-repeat on the bottom-bar BPM-/+ buttons: after a 400 ms hold,
+  // step 5 BPM every 120 ms (the initial tap is handled by seqTouchBottom).
+  static unsigned long bpmHoldNextMs = 0;
+  if (touch.isPressed && !touch.justPressed) {
+    bool minus = isButtonPressed(90, 201, 43, 37);
+    bool plus  = isButtonPressed(186, 201, 43, 37);
+    if (minus || plus) {
+      unsigned long now = millis();
+      if (bpmHoldNextMs == 0) {
+        bpmHoldNextMs = now + 400;
+      } else if ((long)(now - bpmHoldNextMs) >= 0) {
+        zombieSeq->setBPM(zombieSeq->getBPM() + (plus ? 5.0f : -5.0f));
+        bpmHoldNextMs = now + 120;
+        seqNeedsRedraw = true;
+      }
+    } else {
+      bpmHoldNextMs = 0;
+    }
+  } else if (!touch.isPressed) {
+    bpmHoldNextMs = 0;
+  }
 }
 
 // Declared in the main .ino — emits a single MIDI byte over Serial2 TX.

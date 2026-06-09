@@ -181,11 +181,13 @@ struct Envelope {
         return expf(-logf((1.0f + targetRatio) / targetRatio) / rateSamples);
     }
 
+    // Recompute stage coefficients.  Deliberately does NOT touch level/state:
+    // a sounding voice can be re-patched (sequencer retrigger, UI edit, voice
+    // steal) without the level snapping to 0 — which was an audible click on
+    // every overlapping retrigger.  Use reset() for a true cold start.
     void init(float a, float d, float s, float r) {
         attack  = a;  decay   = d;
         sustain = fclamp(s, 0.0f, 1.0f);  release = r;
-        state   = ENV_IDLE;
-        level   = 0.0f;
 
         attackCoef  = calcCoef(a * SAMPLE_RATE, TR_ATTACK);
         attackBase  = (1.0f + TR_ATTACK) * (1.0f - attackCoef);
@@ -194,6 +196,8 @@ struct Envelope {
         releaseCoef = calcCoef(r * SAMPLE_RATE, TR_DR);
         releaseBase = -TR_DR * (1.0f - releaseCoef);
     }
+
+    void reset() { state = ENV_IDLE; level = 0.0f; }
 
     void noteOn()  { state = ENV_ATTACK; }
     void noteOff() { if (state != ENV_IDLE) state = ENV_RELEASE; }
@@ -211,6 +215,10 @@ struct Envelope {
                 break;
             case ENV_SUSTAIN:
                 level = sustain;
+                // Percussive patches (sustain = 0, e.g. Moog bass / plucks)
+                // are DONE once the decay lands: free the voice instead of
+                // rendering silence until note-off (saves 3 oscs + filter).
+                if (sustain < 1e-4f) state = ENV_IDLE;
                 break;
             case ENV_RELEASE:
                 level = releaseBase + level * releaseCoef;
@@ -389,6 +397,8 @@ struct Voice {
         filter.init(FILTER_LOWPASS, 0.8f, 0.3f);
         ampEnv.init(0.01f, 0.3f, 0.7f, 0.5f);
         filterEnv.init(0.01f, 0.3f, 0.5f, 0.3f);
+        ampEnv.reset();
+        filterEnv.reset();
 
         osc1Level       = 0.5f;
         osc2Level       = 0.5f;
@@ -826,6 +836,10 @@ public:
         for (int i = 0; i < MAX_VOICES; i++) voices[i].setSubLevelCached(subLevel);
         xSemaphoreGive(_mutex);
     }
+
+    WaveformType getSubWaveform() const { return subWave; }
+    float        getSubLevel()    const { return subLevel; }
+    int          getSubOctave()   const { return subOctave; }
 
     void setSubOctave(int oct) {
         xSemaphoreTake(_mutex, portMAX_DELAY);

@@ -1,6 +1,22 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.5
+ ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.6
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v3.6 Full-project audit pass:
+ - PRESETS: loading a preset now pushes the SUB-OSC to the engine (Moog/Reese
+   bass had NO sub when loaded from the presets page); saving a user preset no
+   longer writes uninitialised garbage into the sub fields; RENAME now renames
+   the stored patch instead of overwriting it with the live synth state.
+ - ARPEGGIATOR: notes are now gated (gateLength finally works) — previously no
+   note-off was ever sent and voices droned/piled up; held MIDI keys feed the
+   arp only while it runs (no more droning under the arpeggio); BPM/pattern/
+   octave settings survive leaving and re-entering the mode.
+ - ENGINE: envelope re-init no longer snaps level to 0 (audible click on every
+   overlapping sequencer retrigger / live patch edit); percussive patches
+   (sustain=0) free their voice when the decay lands instead of rendering
+   silence until note-off.
+ - SEQ UI: BPM-/+ hold-to-repeat; SONG page playing-slot marker updates live;
+   pending "SURE?" confirmations disarm when switching tabs.
 
  v3.5 Bass fix + sequencer persistence tidy:
  - Bass restored: removed the sub-osc soft-clip "drive" that muddied Moog/Reese
@@ -146,8 +162,14 @@ void onMIDINoteOn(uint8_t channel, uint8_t note, uint8_t velocity) {
   SynthEngine* synth = getZombieSynth();
   Arpeggiator* arp   = getZombieArp();
 
-  if (synth) synth->noteOn(note, velocity);
-  if (arp)   arp->noteOn(note);
+  // While the arp is running, held keys feed the arp only — playing them
+  // directly as well made every key drone underneath the arpeggio.
+  if (isZombieArpRunning()) {
+    if (arp) arp->noteOn(note);
+  } else {
+    if (synth) synth->noteOn(note, velocity);
+    if (arp)   arp->noteOn(note);
+  }
   // Live recording: if the sequencer is armed and playing, capture this note.
   ZombieSequencer* seq = getZombieSeq();
   if (seq) seq->recordNote(note, velocity);
