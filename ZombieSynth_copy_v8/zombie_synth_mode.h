@@ -198,17 +198,28 @@ bool handleSliderTouch(int sx, int sy, int sw, int sh, float& value) {
   return false;
 }
 
-// ─── OSC page ────────────────────────────────────────────────────────────────
+// ─── OSC page (3 oscillators: OSC1 / OSC2 / SUB + master) ─────────────────────
+// One column per oscillator: level slider + wave button (tap cycles) + OCT spin.
+static void drawOscCol(int x, int w, const char* title, float level,
+                       const char* waveStr, const char* octStr) {
+  drawVerticalSlider(x, 82, w, 100, title, level);
+  drawButton(x+2, 186, w-4, 18, waveStr, true);
+  drawButton(x+2, 206, 22, 18, "-", false);
+  tft.setTextColor(THEME_ACCENT, THEME_BG);
+  tft.drawCentreString(octStr, x+w/2, 209, 2);
+  drawButton(x+w-24, 206, 22, 18, "+", false);
+}
 void zombieSynthDrawOscPage() {
-  drawVerticalSlider(10, 83, 65, 150, "OSC1", synthParams.osc1Level);
-  drawButton(80, 93, 50, 24, waveNames[synthParams.osc1Wave], true);
-  drawButton(80, 122, 23, 24, "<", false);
-  drawButton(107, 122, 23, 24, ">", false);
-  drawVerticalSlider(140, 83, 65, 150, "OSC2", synthParams.osc2Level);
-  drawButton(210, 93, 50, 24, waveNames[synthParams.osc2Wave], true);
-  drawButton(210, 122, 23, 24, "<", false);
-  drawButton(237, 122, 23, 24, ">", false);
-  drawVerticalSlider(268, 83, 48, 150, "VOL", synthParams.masterVolume);
+  if (!zombieSynth) return;
+  char o1[6], o2[6], os[6];
+  snprintf(o1, sizeof(o1), "%+d", zombieSynth->getOsc1Octave());
+  snprintf(o2, sizeof(o2), "%+d", zombieSynth->getOsc2Octave());
+  snprintf(os, sizeof(os), "-%d", zombieSynth->getSubOctave());
+  drawOscCol(2,   76, "OSC1", synthParams.osc1Level, waveNames[constrain(synthParams.osc1Wave,0,6)], o1);
+  drawOscCol(80,  76, "OSC2", synthParams.osc2Level, waveNames[constrain(synthParams.osc2Wave,0,6)], o2);
+  int subW = constrain((int)zombieSynth->getSubWaveform(), 0, 6);
+  drawOscCol(158, 76, "SUB",  zombieSynth->getSubLevel(),  waveNames[subW], os);
+  drawVerticalSlider(238, 82, 78, 150, "VOL", synthParams.masterVolume);
 }
 
 // ─── Filter page ─────────────────────────────────────────────────────────────
@@ -320,7 +331,7 @@ void zombieSynthDrawFXPage() {
 }
 
 // ─── DLX page (SYNTHWAVE DELUXE) ──────────────────────────────────────────────
-// Top row: OSC1/OSC2 octave spinners + VEL curve.  Sliders: GLIDE PWM COMP GATE OUT.
+// Top row: per-osc DETUNE spinners + VEL curve.  Sliders: GLIDE PWM COMP GATE OUT.
 static const char* VELCURVE_NAMES[3] = {"LIN","SOFT","HARD"};
 static void dlxSpin(int x, const char* lbl, const char* val) {
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
@@ -330,26 +341,22 @@ static void dlxSpin(int x, const char* lbl, const char* val) {
   tft.drawCentreString(val, x+33, 100, 2);
   drawButton(x+46, 97, 20, 20, "+", false);
 }
+// detune ratio → approx cents for display
+static int dlxCents(float ratio) { return (int)(ratio * 1700.0f); }
 void zombieSynthDrawDLXPage() {
   if (!zombieSynth) return;
   char b[8];
-  // Octave spinners + vel curve (y=83..117)
-  snprintf(b, sizeof(b), "%+d", zombieSynth->getOsc1Octave());
-  dlxSpin(6, "O1 OCT", b);
-  snprintf(b, sizeof(b), "%+d", zombieSynth->getOsc2Octave());
-  dlxSpin(82, "O2 OCT", b);
-  // VEL curve button (x=170..250)
+  // Per-osc detune spinners (cents) — O1 / O2 / SUB
+  snprintf(b, sizeof(b), "%+d", dlxCents(zombieSynth->getOsc1Detune()));
+  dlxSpin(2,   "O1 DET", b);
+  snprintf(b, sizeof(b), "%+d", dlxCents(zombieSynth->getOsc2Detune()));
+  dlxSpin(70,  "O2 DET", b);
+  snprintf(b, sizeof(b), "%+d", dlxCents(zombieSynth->getSubDetune()));
+  dlxSpin(138, "SB DET", b);
+  // VEL curve button (x=210..312)
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-  tft.drawCentreString("VEL", 210, 84, 2);
-  drawButton(170, 97, 80, 20, VELCURVE_NAMES[constrain(zombieSynth->getVelCurve(),0,2)], true);
-  // SUB level spinner (reuse) x=256
-  tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-  tft.drawCentreString("SUB", 289, 84, 2);
-  snprintf(b, sizeof(b), "%d", (int)(zombieSynth->getSubLevel()*100));
-  drawButton(256, 97, 20, 20, "-", false);
-  tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString(b, 289, 100, 2);
-  drawButton(302, 97, 14, 20, "+", false);
+  tft.drawCentreString("VEL", 261, 84, 2);
+  drawButton(212, 97, 100, 20, VELCURVE_NAMES[constrain(zombieSynth->getVelCurve(),0,2)], true);
 
   // 5 sliders (y=122..230, h=108)
   char gv[10];
@@ -401,18 +408,24 @@ void zombieSynthHandleTouch() {
   bool changed = false;
 
   switch (synthParams.currentPage) {
-    case 0: {
-      if (handleSliderTouch(10, 83, 65, 150, synthParams.osc1Level))  { zombieSynth->setOsc1Level(synthParams.osc1Level);  changed = true; }
-      if (handleSliderTouch(140, 83, 65, 150, synthParams.osc2Level)) { zombieSynth->setOsc2Level(synthParams.osc2Level);  changed = true; }
-      if (handleSliderTouch(268, 83, 48, 150, synthParams.masterVolume)) {
-        zombieSynth->setMasterVolume(synthParams.masterVolume);
-        changed = true;
-      }
+    case 0: {  // OSC: 3 oscillators + master
+      if (handleSliderTouch(2,   82, 76, 100, synthParams.osc1Level))   { zombieSynth->setOsc1Level(synthParams.osc1Level);   changed = true; }
+      if (handleSliderTouch(80,  82, 76, 100, synthParams.osc2Level))   { zombieSynth->setOsc2Level(synthParams.osc2Level);   changed = true; }
+      float subLv = zombieSynth->getSubLevel();
+      if (handleSliderTouch(158, 82, 76, 100, subLv))                   { zombieSynth->setSubLevel(subLv);                   changed = true; }
+      if (handleSliderTouch(238, 82, 78, 150, synthParams.masterVolume)){ zombieSynth->setMasterVolume(synthParams.masterVolume); changed = true; }
       if (touch.justPressed) {
-        if (isButtonPressed(80, 122, 23, 24)) { synthParams.osc1Wave = (synthParams.osc1Wave-1+NUM_WAVEFORMS)%NUM_WAVEFORMS; zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed = true; }
-        if (isButtonPressed(107,122, 23, 24)) { synthParams.osc1Wave = (synthParams.osc1Wave+1)%NUM_WAVEFORMS;   zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed = true; }
-        if (isButtonPressed(210,122, 23, 24)) { synthParams.osc2Wave = (synthParams.osc2Wave-1+NUM_WAVEFORMS)%NUM_WAVEFORMS; zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed = true; }
-        if (isButtonPressed(237,122, 23, 24)) { synthParams.osc2Wave = (synthParams.osc2Wave+1)%NUM_WAVEFORMS;   zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed = true; }
+        // Wave buttons (tap cycles through 7 waveforms)
+        if (isButtonPressed(4,  186, 72, 18)) { synthParams.osc1Wave = (synthParams.osc1Wave+1)%NUM_WAVEFORMS; zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed=true; }
+        if (isButtonPressed(82, 186, 72, 18)) { synthParams.osc2Wave = (synthParams.osc2Wave+1)%NUM_WAVEFORMS; zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed=true; }
+        if (isButtonPressed(160,186, 72, 18)) { int sw=((int)zombieSynth->getSubWaveform()+1)%NUM_WAVEFORMS; zombieSynth->setSubWaveform((WaveformType)sw); changed=true; }
+        // OCT spinners  (osc1 / osc2 are -2..+2 shift; sub is 1 or 2 below)
+        if (isButtonPressed(4,  206, 22, 18)) { zombieSynth->setOsc1Octave(zombieSynth->getOsc1Octave()-1); changed=true; }
+        if (isButtonPressed(54, 206, 22, 18)) { zombieSynth->setOsc1Octave(zombieSynth->getOsc1Octave()+1); changed=true; }
+        if (isButtonPressed(82, 206, 22, 18)) { zombieSynth->setOsc2Octave(zombieSynth->getOsc2Octave()-1); changed=true; }
+        if (isButtonPressed(132,206, 22, 18)) { zombieSynth->setOsc2Octave(zombieSynth->getOsc2Octave()+1); changed=true; }
+        if (isButtonPressed(160,206, 22, 18)) { zombieSynth->setSubOctave(zombieSynth->getSubOctave()-1); changed=true; }
+        if (isButtonPressed(210,206, 22, 18)) { zombieSynth->setSubOctave(zombieSynth->getSubOctave()+1); changed=true; }
       }
       break;
     }
@@ -501,15 +514,16 @@ void zombieSynthHandleTouch() {
       if (handleSliderTouch(193,122, 60, 108, ga))  { zombieSynth->setGateThresh(ga*0.1f);  changed = true; }
       float og = zombieSynth->getOutGain()/2.0f;
       if (handleSliderTouch(256,122, 60, 108, og))  { zombieSynth->setOutGain(og*2.0f);     changed = true; }
-      // Buttons (justPressed)
+      // Detune spinners + VEL curve (justPressed)
       if (touch.justPressed) {
-        if (isButtonPressed(6,  97, 20, 20)) { zombieSynth->setOsc1Octave(zombieSynth->getOsc1Octave()-1); changed=true; }
-        if (isButtonPressed(52, 97, 20, 20)) { zombieSynth->setOsc1Octave(zombieSynth->getOsc1Octave()+1); changed=true; }
-        if (isButtonPressed(82, 97, 20, 20)) { zombieSynth->setOsc2Octave(zombieSynth->getOsc2Octave()-1); changed=true; }
-        if (isButtonPressed(128,97, 20, 20)) { zombieSynth->setOsc2Octave(zombieSynth->getOsc2Octave()+1); changed=true; }
-        if (isButtonPressed(170,97, 80, 20)) { zombieSynth->setVelCurve((zombieSynth->getVelCurve()+1)%3); changed=true; }
-        if (isButtonPressed(256,97, 20, 20)) { zombieSynth->setSubLevel(zombieSynth->getSubLevel()-0.05f); changed=true; }
-        if (isButtonPressed(302,97, 14, 20)) { zombieSynth->setSubLevel(zombieSynth->getSubLevel()+0.05f); changed=true; }
+        const float DS = 0.002f;  // ~3.4 cents per tap
+        if (isButtonPressed(2,  97, 20, 20)) { zombieSynth->setOsc1Detune(zombieSynth->getOsc1Detune()-DS); changed=true; }
+        if (isButtonPressed(48, 97, 20, 20)) { zombieSynth->setOsc1Detune(zombieSynth->getOsc1Detune()+DS); changed=true; }
+        if (isButtonPressed(70, 97, 20, 20)) { zombieSynth->setOsc2Detune(zombieSynth->getOsc2Detune()-DS); changed=true; }
+        if (isButtonPressed(116,97, 20, 20)) { zombieSynth->setOsc2Detune(zombieSynth->getOsc2Detune()+DS); changed=true; }
+        if (isButtonPressed(138,97, 20, 20)) { zombieSynth->setSubDetune(zombieSynth->getSubDetune()-DS);   changed=true; }
+        if (isButtonPressed(184,97, 20, 20)) { zombieSynth->setSubDetune(zombieSynth->getSubDetune()+DS);   changed=true; }
+        if (isButtonPressed(212,97,100, 20)) { zombieSynth->setVelCurve((zombieSynth->getVelCurve()+1)%3);  changed=true; }
       }
       break;
     }
