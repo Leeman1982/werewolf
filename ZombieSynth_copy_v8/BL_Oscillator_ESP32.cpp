@@ -107,7 +107,8 @@ IRAM_ATTR float BLOscillator::process() {
     switch (waveform) {
         case WAVE_SAW:
         case WAVE_SQUARE:
-        case WAVE_TRIANGLE: {
+        case WAVE_TRIANGLE:
+        case WAVE_SMOOTHSQ: {
             // Resolve table tier on frequency change.  topFreqs is DESCENDING
             // (tier 0 = highest top-freq, tier 7 = lowest), so a 3-level
             // unrolled binary search picks the right tier in 3 compares
@@ -132,13 +133,23 @@ IRAM_ATTR float BLOscillator::process() {
             uint32_t i1 = (i0 + 1) & TABLE_MASK;
             float    frac = (float)(phaseQ & 0x3FFFFFu) * kInv2p22;
 
-            const float* tbl = BLWavetables::tables[(int)waveform][_cachedTableIdx];
+            // SMOOTHSQ reuses the SQUARE tables two tiers down (fewer
+            // harmonics = rounded edges) — zero extra table memory.
+            int wsel = (waveform == WAVE_SMOOTHSQ) ? (int)WAVE_SQUARE : (int)waveform;
+            int tier = _cachedTableIdx;
+            if (waveform == WAVE_SMOOTHSQ) tier = (tier + 2 > 7) ? 7 : tier + 2;
+
+            const float* tbl = BLWavetables::tables[wsel][tier];
             sample = tbl[i0] + frac * (tbl[i1] - tbl[i0]);
             break;
         }
 
-        case WAVE_SINE: {
-            float phaseF = (float)phaseQ * kInv2p32;
+        case WAVE_SINE:
+        case WAVE_COS: {
+            // COS = sine with a +90° phase offset.  Identical alone, but it
+            // changes the summed waveshape when mixed with other oscillators.
+            uint32_t ph = (waveform == WAVE_COS) ? phaseQ + 0x40000000u : phaseQ;
+            float phaseF = (float)ph * kInv2p32;
             sample = sinf(TWO_PI * phaseF);
             break;
         }

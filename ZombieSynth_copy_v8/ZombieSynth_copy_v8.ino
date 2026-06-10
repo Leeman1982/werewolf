@@ -234,6 +234,37 @@ void onMIDICC(uint8_t channel, uint8_t cc, uint8_t value) {
     // ── LFO (CC 87=rate, CC 88=depth) ───────────────────────────────────
     case 87: globalLFO.rate  = v * 20.0f;                             break;
     case 88: globalLFO.depth = v; globalLFO.enabled = (v > 0.01f);   break;
+
+    // ── SYNTHWAVE DELUXE oscillators / pitch ─────────────────────────────
+    case 20: if (synth) { synthParams.osc1Wave = (int)(v*6.99f); synth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); synthParams.needsRedraw=true; } break;
+    case 21: if (synth) { synthParams.osc2Wave = (int)(v*6.99f); synth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); synthParams.needsRedraw=true; } break;
+    case 22: if (synth) synth->setSubWaveform((WaveformType)(int)(v*6.99f));          break;
+    case 23: if (synth) synth->setOsc1Octave((int)(v*4.99f) - 2);                     break;
+    case 24: if (synth) synth->setOsc2Octave((int)(v*4.99f) - 2);                     break;
+    case 25: if (synth) synth->setOsc1Detune((v - 0.5f) * 0.04f);                     break;
+    case 26: if (synth) synth->setOsc2Detune((v - 0.5f) * 0.04f);                     break;
+    case 27: if (synth) synth->setSubDetune((v - 0.5f) * 0.04f);                      break;
+    case 28: if (synth) synth->setSubLevel(v);                                        break;
+    case 5:  if (synth) synth->setGlideTime(v * 0.6f);                                break;  // CC5 portamento (standard)
+
+    // ── PWM / vibrato ────────────────────────────────────────────────────
+    case 29: if (synth) synth->setPWMRate(v * 12.0f);                                 break;
+    case 30: if (synth) synth->setPWMDepth(v * 0.45f);                                break;
+
+    // ── Filter type ──────────────────────────────────────────────────────
+    case 31: if (synth) { synthParams.filterType = (int)(v*3.99f); synth->setFilterType((FilterType)synthParams.filterType); synthParams.needsRedraw=true; } break;
+
+    // ── Dynamics: drive / compressor / gate / output ─────────────────────
+    case 90: if (synth) { synth->setSaturationAmount(v); synth->setSaturationDrive(v); } break;
+    case 96: if (synth) synth->setCompAmount(v);                                      break;
+    case 95: if (synth) synth->setGateThresh(v * 0.1f);                               break;
+    case 97: if (synth) synth->setOutGain(v * 2.0f);                                  break;
+
+    // ── Performance ──────────────────────────────────────────────────────
+    case 91: if (synth) { synth->setDelayMix(v); }                                   break;  // reverb-ish send (delay)
+    case 92: if (synth) synth->setDelayFeedback(v * 0.85f);                           break;
+    case 94: if (synth) synth->setVelCurve((int)(v * 2.99f));                         break;
+    case 89: if (seq)   seq->jumpToPattern((int)(v * (float)(MAX_PATTERNS-1) + 0.5f)); break;
   }
 }
 

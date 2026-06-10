@@ -65,8 +65,11 @@ enum WaveformType {
     WAVE_SQUARE,
     WAVE_TRIANGLE,
     WAVE_SINE,
-    WAVE_PULSE
+    WAVE_PULSE,
+    WAVE_SMOOTHSQ,   // square via a lower-harmonic table tier (rounded edges)
+    WAVE_COS         // 90°-shifted sine; changes the mix waveshape vs SINE
 };
+#define NUM_WAVEFORMS 7
 
 enum FilterType {
     FILTER_LOWPASS,
@@ -170,6 +173,7 @@ struct Envelope {
     float level;
     float attackCoef,  decayCoef,  releaseCoef;
     float attackBase,  decayBase,  releaseBase;
+    bool  _percussive;   // sustain≈0 → free the voice when decay lands
 
     // Target ratios set the curvature.  ~0.3 gives a punchy convex attack;
     // a tiny value makes decay/release a near-pure exponential tail.
@@ -195,6 +199,7 @@ struct Envelope {
         decayBase   = (sustain - TR_DR) * (1.0f - decayCoef);
         releaseCoef = calcCoef(r * SAMPLE_RATE, TR_DR);
         releaseBase = -TR_DR * (1.0f - releaseCoef);
+        _percussive = (sustain < 0.0001f);
     }
 
     void reset() { state = ENV_IDLE; level = 0.0f; }
@@ -217,8 +222,9 @@ struct Envelope {
                 level = sustain;
                 // Percussive patches (sustain = 0, e.g. Moog bass / plucks)
                 // are DONE once the decay lands: free the voice instead of
-                // rendering silence until note-off (saves 3 oscs + filter).
-                if (sustain < 1e-4f) state = ENV_IDLE;
+                // rendering silence until note-off.  Uses a precomputed bool so
+                // this IRAM function carries no extra float literal (l32r).
+                if (_percussive) state = ENV_IDLE;
                 break;
             case ENV_RELEASE:
                 level = releaseBase + level * releaseCoef;
@@ -379,10 +385,31 @@ struct Voice {
     // Per-note "bass mono" scaler: low notes stay centred (fat/punchy), only
     // mids/highs get stereo width.  0 = mono, 1 = full spread.
     float _spreadScale;
+    // ── Frequency multipliers per oscillator (octave shift × detune) ─────────
+    // All oscillator pitch flows through ONE path:
+    //   osc freq = baseFreq * detN * pitchRatio
+    // so octave shifts, per-osc detune, pitch-bend, vibrato and glide compose
+    // consistently everywhere.
+    float det1;             // osc1 multiplier (2^oct1 × (1+det1Ratio))
+    float det2;             // osc2 multiplier (2^oct2 × (1+osc2Detune))
+    float detSub;           // sub multiplier (0.5 or 0.25 × (1+subDetune))
+    float pitchRatio;       // pitch-bend × vibrato ratio (1.0 = no bend)
+    // Glide/portamento: baseFreq slews toward glideTarget once per buffer.
+    float glideTarget;      // destination frequency (Hz); == baseFreq when idle
+    float lastFreq;         // previous note's frequency (glide start point)
+    // Velocity amplitude after the response curve (precomputed per note).
+    float _velAmp;
 
     inline void setSubLevelCached(float l) {
         subLevel = fclamp(l, 0.0f, 1.0f);
         _subTrim = 1.0f / (1.0f + subLevel * 0.6f);
+    }
+
+    // Push baseFreq through the per-osc multipliers to the oscillators.
+    inline void updateFrequencies() {
+        osc1.setFrequency(baseFreq * det1 * pitchRatio);
+        osc2.setFrequency(baseFreq * det2 * pitchRatio);
+        subOsc.setFrequency(baseFreq * detSub * pitchRatio);
     }
 
     void init() {
@@ -414,9 +441,18 @@ struct Voice {
         _velCutoff      = 0.0f;
         _sideLP         = 0.0f;
         _spreadScale    = 0.0f;
+        det1            = 1.0f;
+        det2            = 1.0f + osc2Detune;
+        detSub          = 0.5f;
+        pitchRatio      = 1.0f;
+        glideTarget     = 440.0f;
+        lastFreq        = 0.0f;
+        _velAmp         = 0.0f;
     }
 
-    void noteOn(int n, int vel) {
+    // velCurve: 0 = linear, 1 = soft (sqrt — compressed dynamics),
+    //           2 = hard (x² — wide dynamics, needs a firm hit)
+    void noteOn(int n, int vel, int velCurve = 0) {
         note       = n;
         velocity   = vel;
         active     = true;
@@ -428,6 +464,7 @@ struct Voice {
         uint32_t r = ((uint32_t)random(0, 65536) << 16) | (uint32_t)random(0, 65536);
         float drift = ((float)(r & 0xFFFF) - 32768.0f) * (0.0012f / 32768.0f);
         baseFreq = (440.0f * powf(2.0f, (n - 69.0f) / 12.0f)) * (1.0f + drift);
+        glideTarget = baseFreq;   // engine may re-point this for portamento
 
         // Free-running / randomised start phase (different per oscillator) rather
         // than a hard reset to 0.  Kills the identical-attack "machine-gun" click
@@ -436,14 +473,17 @@ struct Voice {
         osc1.phaseQ   = r;
         osc2.phaseQ   = r * 2654435761u + 1u;
         subOsc.phaseQ = r * 40503u + 12345u;
-        osc1.setFrequency(baseFreq);
-        osc2.setFrequency(baseFreq * (1.0f + osc2Detune));
-        // Sub-osc: 1 or 2 octaves below
-        int subOct = (subOctave < 1) ? 1 : (subOctave > 2 ? 2 : subOctave);
-        subOsc.setFrequency(baseFreq * (subOct == 2 ? 0.25f : 0.5f));
+        updateFrequencies();
+
+        // Velocity response curve, cached once per note (saves a per-sample mul
+        // and gives the player/sequencer expressive control).
+        float vn = fclamp(vel * (1.0f / 127.0f), 0.0f, 1.0f);
+        if      (velCurve == 1) vn = sqrtf(vn);
+        else if (velCurve == 2) vn = vn * vn;
+        _velAmp = vn;
 
         // Cache velocity → cutoff contribution (brighten-only).
-        _velCutoff = velFilter * (vel * (1.0f / 127.0f));
+        _velCutoff = velFilter * vn;
 
         // Bass-mono: notes ≤ C3 (48) play centred; ≥ C5 (72) get full width.
         _spreadScale = fclamp((n - 48.0f) * (1.0f / 24.0f), 0.0f, 1.0f);
@@ -483,7 +523,7 @@ struct Voice {
                        + filterLFOMod + cutoffLock + _velCutoff;
         float filtered = filter.processWithMod(oscMix, envMod);
 
-        float ampEnvOut = ampEnv.process() * (velocity * (1.0f / 127.0f));
+        float ampEnvOut = ampEnv.process() * _velAmp;
         // Amp LFO multiplier centred at 1.0 (ampLFOMod is -depth..+depth)
         ampEnvOut *= fclamp(1.0f + ampLFOMod, 0.0f, 2.0f);
 
@@ -649,6 +689,60 @@ private:
     float        subLevel;
     int          subOctave;
 
+    // ── SYNTHWAVE DELUXE globals (performance params, not per-patch) ─────────
+    float osc1Detune;     // ratio offset for osc1 (e.g. 0.004 → ×1.004)
+    float subDetune;      // ratio offset for the sub oscillator
+    int   osc1Octave;     // -2..+2 octave shift for osc1
+    int   osc2Octave;     // -2..+2 octave shift for osc2
+    float glideTime;      // portamento, seconds (0 = off)
+    float _glideCoef;     // per-buffer slew coefficient derived from glideTime
+    float pwmRate;        // PWM LFO rate, Hz (0 = static width)
+    float pwmDepth;       // 0..1 — swing around 50 % width
+    float _pwmPhase;
+    float compAmount;     // 0..1 one-knob compressor (0 = bypass)
+    float gateThresh;     // 0..~0.1 master noise-gate threshold (0 = off)
+    float outGain;        // post-FX output trim (default 1.0)
+    int   velCurve;       // 0 = linear, 1 = soft, 2 = hard
+    // Dynamics state (audio-thread only)
+    float _dynEnv;        // envelope follower for comp + gate
+    float _gateGain;      // smoothed gate gain
+
+    // 2^oct for oct in -2..+2 (clamped).
+    static float octaveMul(int oct) {
+        static const float k[5] = { 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+        int i = oct + 2; if (i < 0) i = 0; if (i > 4) i = 4;
+        return k[i];
+    }
+    // Per-osc frequency multipliers from octave + detune, cached on change.
+    float _det1Mul, _det2Mul, _detSubMul;
+    void rebuildDetMuls() {
+        _det1Mul   = octaveMul(osc1Octave) * (1.0f + osc1Detune);
+        _det2Mul   = octaveMul(osc2Octave) * (1.0f + osc2Detune);
+        _detSubMul = (subOctave == 2 ? 0.25f : 0.5f) * (1.0f + subDetune);
+    }
+    // Push current multipliers into a voice (called on every note-on).
+    inline void applyDetsToVoice(Voice& v) {
+        v.det1   = _det1Mul;
+        v.det2   = _det2Mul;
+        v.detSub = _detSubMul;
+        v.pitchRatio = pitchBendRatio;
+    }
+
+    // Portamento: re-point the freshly triggered voice so it starts at the
+    // previous note's frequency and slews to the new one (processAudio runs
+    // the per-buffer slew).  Call AFTER v.noteOn().
+    inline void startGlide(Voice& v) {
+        if (glideTime > 1e-4f && v.lastFreq > 1.0f) {
+            float target  = v.baseFreq;
+            v.glideTarget = target;
+            v.baseFreq    = v.lastFreq;
+            v.lastFreq    = target;
+            v.updateFrequencies();
+        } else {
+            v.lastFreq = v.baseFreq;
+        }
+    }
+
     // Thread-safety: guards all parameter writes vs Core-0 audio render loop
     SemaphoreHandle_t _mutex;
 
@@ -704,6 +798,22 @@ public:
         _limiterOn     = true;   // transparent peak control on by default
         _warmL         = 0.0f;
         _warmR         = 0.0f;
+        osc1Detune     = 0.0f;
+        subDetune      = 0.0f;
+        osc1Octave     = 0;
+        osc2Octave     = 0;
+        glideTime      = 0.0f;
+        _glideCoef     = 1.0f;
+        pwmRate        = 0.0f;
+        pwmDepth       = 0.0f;
+        _pwmPhase      = 0.0f;
+        compAmount     = 0.0f;
+        gateThresh     = 0.0f;
+        outGain        = 1.0f;
+        velCurve       = 0;
+        _dynEnv        = 0.0f;
+        _gateGain      = 1.0f;
+        rebuildDetMuls();
     }
 
     void init() {
@@ -758,11 +868,9 @@ public:
         v.cutoffLock      = 0.0f;
         v.gainL           = 0.7071f;
         v.gainR           = 0.7071f;
-        v.noteOn(note, velocity);
-        if (pitchBendRatio != 1.0f) {
-            v.osc1.setFrequency(v.baseFreq * pitchBendRatio);
-            v.osc2.setFrequency(v.baseFreq * (1.0f + osc2Detune) * pitchBendRatio);
-        }
+        applyDetsToVoice(v);
+        v.noteOn(note, velocity, velCurve);
+        startGlide(v);
         xSemaphoreGive(_mutex);
     }
 
@@ -811,11 +919,11 @@ public:
     void setOsc2Detune(float detuneRatio) {
         xSemaphoreTake(_mutex, portMAX_DELAY);
         osc2Detune = detuneRatio;
+        rebuildDetMuls();
         for (int i = 0; i < MAX_VOICES; i++) {
             voices[i].osc2Detune = detuneRatio;
-            if (voices[i].active)
-                voices[i].osc2.setFrequency(
-                    voices[i].baseFreq * (1.0f + detuneRatio) * pitchBendRatio);
+            voices[i].det2 = _det2Mul;
+            if (voices[i].active) voices[i].updateFrequencies();
         }
         xSemaphoreGive(_mutex);
     }
@@ -844,12 +952,11 @@ public:
     void setSubOctave(int oct) {
         xSemaphoreTake(_mutex, portMAX_DELAY);
         subOctave = (oct < 1) ? 1 : (oct > 2 ? 2 : oct);
+        rebuildDetMuls();
         for (int i = 0; i < MAX_VOICES; i++) {
             voices[i].subOctave = subOctave;
-            if (voices[i].active) {
-                voices[i].subOsc.setFrequency(
-                    voices[i].baseFreq * (subOctave == 2 ? 0.25f : 0.5f));
-            }
+            voices[i].detSub = _detSubMul;
+            if (voices[i].active) voices[i].updateFrequencies();
         }
         xSemaphoreGive(_mutex);
     }
@@ -870,11 +977,9 @@ public:
         float p = constrain(pan, -1.0f, 1.0f);
         v.gainL = sqrtf(0.5f * (1.0f - p));
         v.gainR = sqrtf(0.5f * (1.0f + p));
-        v.noteOn(note, velocity);
-        if (pitchBendRatio != 1.0f) {
-            v.osc1.setFrequency(v.baseFreq * pitchBendRatio);
-            v.osc2.setFrequency(v.baseFreq * (1.0f + osc2Detune) * pitchBendRatio);
-        }
+        applyDetsToVoice(v);
+        v.noteOn(note, velocity, velCurve);
+        startGlide(v);
         xSemaphoreGive(_mutex);
     }
 
@@ -931,12 +1036,8 @@ public:
         xSemaphoreTake(_mutex, portMAX_DELAY);
         pitchBendRatio = powf(2.0f, semitones / 12.0f);
         for (int i = 0; i < MAX_VOICES; i++) {
-            if (voices[i].active) {
-                voices[i].osc1.setFrequency(
-                    voices[i].baseFreq * pitchBendRatio);
-                voices[i].osc2.setFrequency(
-                    voices[i].baseFreq * (1.0f + voices[i].osc2Detune) * pitchBendRatio);
-            }
+            voices[i].pitchRatio = pitchBendRatio;
+            if (voices[i].active) voices[i].updateFrequencies();
         }
         xSemaphoreGive(_mutex);
     }
@@ -982,6 +1083,84 @@ public:
     }
     bool getLimiterEnabled() const { return _limiterOn; }
 
+    // ── SYNTHWAVE DELUXE setters ──────────────────────────────────────────────
+    void setOsc1Detune(float r) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        osc1Detune = constrain(r, -0.06f, 0.06f);
+        rebuildDetMuls();
+        for (int i = 0; i < MAX_VOICES; i++) {
+            voices[i].det1 = _det1Mul;
+            if (voices[i].active) voices[i].updateFrequencies();
+        }
+        xSemaphoreGive(_mutex);
+    }
+    void setSubDetune(float r) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        subDetune = constrain(r, -0.06f, 0.06f);
+        rebuildDetMuls();
+        for (int i = 0; i < MAX_VOICES; i++) {
+            voices[i].detSub = _detSubMul;
+            if (voices[i].active) voices[i].updateFrequencies();
+        }
+        xSemaphoreGive(_mutex);
+    }
+    void setOsc1Octave(int oct) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        osc1Octave = (oct < -2) ? -2 : (oct > 2 ? 2 : oct);
+        rebuildDetMuls();
+        for (int i = 0; i < MAX_VOICES; i++) {
+            voices[i].det1 = _det1Mul;
+            if (voices[i].active) voices[i].updateFrequencies();
+        }
+        xSemaphoreGive(_mutex);
+    }
+    void setOsc2Octave(int oct) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        osc2Octave = (oct < -2) ? -2 : (oct > 2 ? 2 : oct);
+        rebuildDetMuls();
+        for (int i = 0; i < MAX_VOICES; i++) {
+            voices[i].det2 = _det2Mul;
+            if (voices[i].active) voices[i].updateFrequencies();
+        }
+        xSemaphoreGive(_mutex);
+    }
+    void setSubWaveformOnly(WaveformType w) { setSubWaveform(w); }
+
+    // Glide/portamento in seconds (0 = off).  Slew runs once per render buffer.
+    void setGlideTime(float seconds) {
+        xSemaphoreTake(_mutex, portMAX_DELAY);
+        glideTime = constrain(seconds, 0.0f, 1.5f);
+        if (glideTime < 1e-4f) {
+            _glideCoef = 1.0f;
+        } else {
+            // Per-buffer one-pole: reach ~99% of target in glideTime.
+            float buffersPerGlide = (glideTime * (float)SAMPLE_RATE) / (float)BUFFER_SIZE;
+            _glideCoef = 1.0f - expf(-4.6f / fmaxf(buffersPerGlide, 1.0f));
+        }
+        xSemaphoreGive(_mutex);
+    }
+    float getGlideTime() const { return glideTime; }
+
+    void setPWMRate(float hz)   { xSemaphoreTake(_mutex, portMAX_DELAY); pwmRate  = constrain(hz, 0.0f, 12.0f); xSemaphoreGive(_mutex); }
+    void setPWMDepth(float d)   { xSemaphoreTake(_mutex, portMAX_DELAY); pwmDepth = constrain(d, 0.0f, 0.45f); xSemaphoreGive(_mutex); }
+    float getPWMRate()  const { return pwmRate; }
+    float getPWMDepth() const { return pwmDepth; }
+
+    void setCompAmount(float a) { xSemaphoreTake(_mutex, portMAX_DELAY); compAmount = constrain(a, 0.0f, 1.0f); xSemaphoreGive(_mutex); }
+    void setGateThresh(float t) { xSemaphoreTake(_mutex, portMAX_DELAY); gateThresh = constrain(t, 0.0f, 0.1f); xSemaphoreGive(_mutex); }
+    void setOutGain(float g)    { xSemaphoreTake(_mutex, portMAX_DELAY); outGain = constrain(g, 0.0f, 2.0f); xSemaphoreGive(_mutex); }
+    float getCompAmount() const { return compAmount; }
+    float getGateThresh() const { return gateThresh; }
+    float getOutGain()    const { return outGain; }
+
+    void setVelCurve(int c)     { xSemaphoreTake(_mutex, portMAX_DELAY); velCurve = (c < 0) ? 0 : (c > 2 ? 2 : c); xSemaphoreGive(_mutex); }
+    int  getVelCurve()    const { return velCurve; }
+
+    int  getOsc1Octave() const { return osc1Octave; }
+    int  getOsc2Octave() const { return osc2Octave; }
+    float getOsc1Detune() const { return osc1Detune; }
+    float getSubDetune()  const { return subDetune; }
+
     // ── Note-on with stereo pan AND per-step cutoff lock (P-Lock support) ─────
     // cutoffLock is added to the filter cutoff inside Voice::process()
     // alongside the LFO + envelope contributions.  0.0 = no lock (default).
@@ -1000,11 +1179,9 @@ public:
         v.gainL      = sqrtf(0.5f * (1.0f - p));
         v.gainR      = sqrtf(0.5f * (1.0f + p));
         v.cutoffLock = constrain(cutoffLock, -1.0f, 1.0f);
-        v.noteOn(note, velocity);
-        if (pitchBendRatio != 1.0f) {
-            v.osc1.setFrequency(v.baseFreq * pitchBendRatio);
-            v.osc2.setFrequency(v.baseFreq * (1.0f + osc2Detune) * pitchBendRatio);
-        }
+        applyDetsToVoice(v);
+        v.noteOn(note, velocity, velCurve);
+        startGlide(v);
         xSemaphoreGive(_mutex);
     }
 
@@ -1053,11 +1230,13 @@ public:
         v.gainL      = sqrtf(0.5f * (1.0f - pp));
         v.gainR      = sqrtf(0.5f * (1.0f + pp));
         v.cutoffLock = constrain(cutoffMod, -1.0f, 1.0f);
-        v.noteOn(note, velocity);
-        if (pitchBendRatio != 1.0f) {
-            v.osc1.setFrequency(v.baseFreq * pitchBendRatio);
-            v.osc2.setFrequency(v.baseFreq * (1.0f + v.osc2Detune) * pitchBendRatio);
-        }
+        // Per-track pitch multipliers: global octave shifts + patch detune.
+        v.det1   = octaveMul(osc1Octave) * (1.0f + osc1Detune);
+        v.det2   = octaveMul(osc2Octave) * (1.0f + p.osc2Detune);
+        v.detSub = (v.subOctave == 2 ? 0.25f : 0.5f) * (1.0f + subDetune);
+        v.pitchRatio = pitchBendRatio;
+        v.noteOn(note, velocity, velCurve);
+        startGlide(v);
         xSemaphoreGive(_mutex);
     }
 
@@ -1087,7 +1266,39 @@ public:
         const float lfoA       = _lfoAmpMod;
         const float masterVol  = masterVolume;
         const bool  limiterOn  = _limiterOn;
+        const float glideCoef  = _glideCoef;
+        const float compAmt    = compAmount;
+        const float gateTh     = gateThresh;
+        const float outG       = outGain;
+        const float pwmRt      = pwmRate;
+        const float pwmDp      = pwmDepth;
         xSemaphoreGive(_mutex);
+
+        // ── Per-buffer modulation ────────────────────────────────────────────
+        // Glide (portamento): slew each active voice's baseFreq toward its
+        // target once per buffer — smooth enough at ~172 Hz buffer rate.
+        if (glideCoef < 0.999f) {
+            for (int v = 0; v < MAX_VOICES; v++) {
+                Voice& vv = voices[v];
+                if (vv.active && fabsf(vv.glideTarget - vv.baseFreq) > 0.01f) {
+                    vv.baseFreq += (vv.glideTarget - vv.baseFreq) * glideCoef;
+                    vv.updateFrequencies();
+                }
+            }
+        }
+        // PWM: sweep pulse width on any pulse-wave oscillators.
+        if (pwmDp > 1e-4f) {
+            float pw = 0.5f + pwmDp * sinf(TWO_PI * _pwmPhase);
+            for (int v = 0; v < MAX_VOICES; v++) {
+                if (voices[v].osc1.waveform == WAVE_PULSE) voices[v].osc1.setPulseWidth(pw);
+                if (voices[v].osc2.waveform == WAVE_PULSE) voices[v].osc2.setPulseWidth(pw);
+            }
+            _pwmPhase += pwmRt * ((float)BUFFER_SIZE / (float)SAMPLE_RATE);
+            if (_pwmPhase >= 1.0f) _pwmPhase -= 1.0f;
+        }
+
+        const bool dynOn = (compAmt > 1e-3f) || (gateTh > 1e-4f);
+
         for (int i = 0; i < BUFFER_SIZE; i++) {
             float mixL = 0.0f, mixR = 0.0f;
             for (int v = 0; v < MAX_VOICES; v++) {
@@ -1121,6 +1332,36 @@ public:
             _warmR += WARM_A * (outR - _warmR);
             outL = _warmL + (outL - _warmL) * WARM_KEEP;
             outR = _warmR + (outR - _warmR) * WARM_KEEP;
+
+            // ── Dynamics: compressor + noise gate (shared envelope follower) ──
+            if (dynOn) {
+                float lvl = fabsf(outL) > fabsf(outR) ? fabsf(outL) : fabsf(outR);
+                // Asymmetric follower: fast attack, slow release.
+                _dynEnv += (lvl - _dynEnv) * (lvl > _dynEnv ? 0.01f : 0.0003f);
+                // Compressor (clean bypass at compAmt=0): soft downward ratio.
+                if (compAmt > 1e-3f) {
+                    const float thresh = 0.30f;
+                    if (_dynEnv > thresh) {
+                        float ratio      = 1.0f + compAmt * 3.0f;
+                        float compressed = thresh + (_dynEnv - thresh) / ratio;
+                        float gr         = compressed / _dynEnv;
+                        float makeup     = 1.0f + compAmt * 0.5f;
+                        outL *= gr * makeup;
+                        outR *= gr * makeup;
+                    }
+                }
+                // Noise gate: smoothly mute below threshold.
+                if (gateTh > 1e-4f) {
+                    float gTarget = (_dynEnv < gateTh) ? 0.0f : 1.0f;
+                    _gateGain += (gTarget - _gateGain) * 0.005f;
+                    outL *= _gateGain;
+                    outR *= _gateGain;
+                }
+            }
+
+            // Output trim before the safety stages.
+            outL *= outG;
+            outR *= outG;
 
             // Optional master limiter (selectable) tames sustained peaks.
             if (limiterOn) _limiter.process(outL, outR);
@@ -1157,11 +1398,8 @@ public:
         xSemaphoreTake(_mutex, portMAX_DELAY);
         float ratio = powf(2.0f, semitones / 12.0f) * pitchBendRatio;
         for (int i = 0; i < MAX_VOICES; i++) {
-            if (voices[i].active) {
-                voices[i].osc1.setFrequency(voices[i].baseFreq * ratio);
-                voices[i].osc2.setFrequency(
-                    voices[i].baseFreq * (1.0f + voices[i].osc2Detune) * ratio);
-            }
+            voices[i].pitchRatio = ratio;
+            if (voices[i].active) voices[i].updateFrequencies();
         }
         xSemaphoreGive(_mutex);
     }
@@ -1177,7 +1415,11 @@ public:
         subWave         = (WaveformType)p.subWave;
         subLevel        = constrain(p.subLevel, 0.0f, 1.0f);
         subOctave       = (p.subOctave < 1) ? 1 : (p.subOctave > 2 ? 2 : p.subOctave);
+        rebuildDetMuls();
         for (int i = 0; i < MAX_VOICES; i++) {
+            voices[i].det1   = _det1Mul;
+            voices[i].det2   = _det2Mul;
+            voices[i].detSub = _detSubMul;
             voices[i].osc1.waveform  = (WaveformType)p.osc1Wave;
             voices[i].osc2.waveform  = (WaveformType)p.osc2Wave;
             voices[i].subOsc.waveform= subWave;

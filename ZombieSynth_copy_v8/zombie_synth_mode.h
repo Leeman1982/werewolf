@@ -46,7 +46,7 @@ static ZombieSynthParams synthParams;
 extern LFOEngine  globalLFO;
 extern int        lastPlayedMidiNote;
 
-const char* waveNames[]   = {"SAW","SQR","TRI","SIN","PLS"};
+const char* waveNames[]   = {"SAW","SQR","TRI","SIN","PLS","SSQ","COS"};
 const char* filterNames[] = {"LP","HP","BP","NOTCH"};
 
 // Returns "C4", "D#3" etc. for a MIDI note number
@@ -366,10 +366,10 @@ void zombieSynthHandleTouch() {
         changed = true;
       }
       if (touch.justPressed) {
-        if (isButtonPressed(80, 122, 23, 24)) { synthParams.osc1Wave = (synthParams.osc1Wave-1+5)%5; zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed = true; }
-        if (isButtonPressed(107,122, 23, 24)) { synthParams.osc1Wave = (synthParams.osc1Wave+1)%5;   zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed = true; }
-        if (isButtonPressed(210,122, 23, 24)) { synthParams.osc2Wave = (synthParams.osc2Wave-1+5)%5; zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed = true; }
-        if (isButtonPressed(237,122, 23, 24)) { synthParams.osc2Wave = (synthParams.osc2Wave+1)%5;   zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed = true; }
+        if (isButtonPressed(80, 122, 23, 24)) { synthParams.osc1Wave = (synthParams.osc1Wave-1+NUM_WAVEFORMS)%NUM_WAVEFORMS; zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed = true; }
+        if (isButtonPressed(107,122, 23, 24)) { synthParams.osc1Wave = (synthParams.osc1Wave+1)%NUM_WAVEFORMS;   zombieSynth->setOsc1Waveform((WaveformType)synthParams.osc1Wave); changed = true; }
+        if (isButtonPressed(210,122, 23, 24)) { synthParams.osc2Wave = (synthParams.osc2Wave-1+NUM_WAVEFORMS)%NUM_WAVEFORMS; zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed = true; }
+        if (isButtonPressed(237,122, 23, 24)) { synthParams.osc2Wave = (synthParams.osc2Wave+1)%NUM_WAVEFORMS;   zombieSynth->setOsc2Waveform((WaveformType)synthParams.osc2Wave); changed = true; }
       }
       break;
     }

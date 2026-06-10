@@ -1137,7 +1137,7 @@ static void seqTouchSong() {
 // ─────────────────────────────────────────────────────────────────────────────
 // SYNTH TAB – per-track full patch editor
 // ─────────────────────────────────────────────────────────────────────────────
-static const char* SEQ_WAVE_NAMES[5] = {"SAW","SQR","TRI","SIN","PLS"};
+static const char* SEQ_WAVE_NAMES[7] = {"SAW","SQR","TRI","SIN","PLS","SSQ","COS"};
 static const char* SEQ_FILT_NAMES[4] = {"LP","HP","BP","NT"};
 #define SEQ_NUM_SSTABS 8
 #define SEQ_SSTAB_W    40
@@ -1202,11 +1202,11 @@ static void seqDrawSynth() {
   switch (seqSynthSubTab) {
 
     case 0: { // OSC
-      snprintf(buf, sizeof(buf), "%s", SEQ_WAVE_NAMES[constrain(p.osc1Wave, 0, 4)]);
+      snprintf(buf, sizeof(buf), "%s", SEQ_WAVE_NAMES[constrain(p.osc1Wave, 0, 6)]);
       spin(104, "OSC1 WAVE", buf);
       snprintf(buf, sizeof(buf), "%.2f", p.osc1Level);
       spin(123, "OSC1 LVL",  buf);
-      snprintf(buf, sizeof(buf), "%s", SEQ_WAVE_NAMES[constrain(p.osc2Wave, 0, 4)]);
+      snprintf(buf, sizeof(buf), "%s", SEQ_WAVE_NAMES[constrain(p.osc2Wave, 0, 6)]);
       spin(142, "OSC2 WAVE", buf);
       snprintf(buf, sizeof(buf), "%.2f", p.osc2Level);
       spin(161, "OSC2 LVL",  buf);
@@ -1239,7 +1239,7 @@ static void seqDrawSynth() {
     }
 
     case 2: { // SUB – dedicated sub oscillator
-      snprintf(buf, sizeof(buf), "%s", SEQ_WAVE_NAMES[constrain(p.subWave, 0, 4)]);
+      snprintf(buf, sizeof(buf), "%s", SEQ_WAVE_NAMES[constrain(p.subWave, 0, 6)]);
       spin(104, "SUB WAVE", buf);
       snprintf(buf, sizeof(buf), "%.2f", p.subLevel);
       spin(123, "SUB LVL",  buf);
@@ -1821,12 +1821,12 @@ static void seqTouchSynth() {
 
   switch (seqSynthSubTab) {
     case 0: { // OSC
-      if (isButtonPressed(55,104,22,17)) { p.osc1Wave=(p.osc1Wave-1+5)%5; seqNeedsRedraw=true; return; }
-      if (isButtonPressed(243,104,22,17)){ p.osc1Wave=(p.osc1Wave+1)%5;   seqNeedsRedraw=true; return; }
+      if (isButtonPressed(55,104,22,17)) { p.osc1Wave=(p.osc1Wave-1+7)%7; seqNeedsRedraw=true; return; }
+      if (isButtonPressed(243,104,22,17)){ p.osc1Wave=(p.osc1Wave+1)%7;   seqNeedsRedraw=true; return; }
       if (isButtonPressed(55,123,22,17)) { p.osc1Level=constrain(p.osc1Level-0.05f,0.0f,1.0f); seqNeedsRedraw=true; return; }
       if (isButtonPressed(243,123,22,17)){ p.osc1Level=constrain(p.osc1Level+0.05f,0.0f,1.0f); seqNeedsRedraw=true; return; }
-      if (isButtonPressed(55,142,22,17)) { p.osc2Wave=(p.osc2Wave-1+5)%5; seqNeedsRedraw=true; return; }
-      if (isButtonPressed(243,142,22,17)){ p.osc2Wave=(p.osc2Wave+1)%5;   seqNeedsRedraw=true; return; }
+      if (isButtonPressed(55,142,22,17)) { p.osc2Wave=(p.osc2Wave-1+7)%7; seqNeedsRedraw=true; return; }
+      if (isButtonPressed(243,142,22,17)){ p.osc2Wave=(p.osc2Wave+1)%7;   seqNeedsRedraw=true; return; }
       if (isButtonPressed(55,161,22,17)) { p.osc2Level=constrain(p.osc2Level-0.05f,0.0f,1.0f); seqNeedsRedraw=true; return; }
       if (isButtonPressed(243,161,22,17)){ p.osc2Level=constrain(p.osc2Level+0.05f,0.0f,1.0f); seqNeedsRedraw=true; return; }
       if (isButtonPressed(55,180,22,17)) { p.osc2Detune=constrain(p.osc2Detune-0.001f,0.0f,0.05f); seqNeedsRedraw=true; return; }
@@ -1848,8 +1848,8 @@ static void seqTouchSynth() {
       break;
     }
     case 2: { // SUB osc
-      if (isButtonPressed(55,104,22,17)) { p.subWave=(p.subWave-1+5)%5; seqNeedsRedraw=true; return; }
-      if (isButtonPressed(243,104,22,17)){ p.subWave=(p.subWave+1)%5;   seqNeedsRedraw=true; return; }
+      if (isButtonPressed(55,104,22,17)) { p.subWave=(p.subWave-1+7)%7; seqNeedsRedraw=true; return; }
+      if (isButtonPressed(243,104,22,17)){ p.subWave=(p.subWave+1)%7;   seqNeedsRedraw=true; return; }
       if (isButtonPressed(55,123,22,17)) { p.subLevel=constrain(p.subLevel-0.05f,0.0f,1.0f); seqNeedsRedraw=true; return; }
       if (isButtonPressed(243,123,22,17)){ p.subLevel=constrain(p.subLevel+0.05f,0.0f,1.0f); seqNeedsRedraw=true; return; }
       if (isButtonPressed(55,142,22,17)) { p.subOctave=(p.subOctave<=1)?2:1; seqNeedsRedraw=true; return; }
