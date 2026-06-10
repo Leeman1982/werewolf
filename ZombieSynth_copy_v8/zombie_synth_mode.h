@@ -111,12 +111,12 @@ void zombieSynthInit() {
 }
 
 // ─── Header ──────────────────────────────────────────────────────────────────
-// 6 tabs: OSC FLTR AMP F.ENV LFO FX
-// Each tab: w=50, gap=1 → 6×51=306, startX=3
-static const int TAB_W = 50, TAB_H = 22, TAB_Y = 55;
-static const int TAB_X[] = {3, 54, 105, 156, 207, 258};
-static const char* TAB_NAMES[] = {"OSC", "FLTR", "AMP", "F.ENV", "LFO", "FX"};
-static const int NUM_TABS = 6;
+// 7 tabs: OSC FLTR AMP F.ENV LFO FX DLX
+// Each tab: w=44, gap=1 → 7×45=315, startX=2
+static const int TAB_W = 44, TAB_H = 22, TAB_Y = 55;
+static const int TAB_X[] = {2, 47, 92, 137, 182, 227, 272};
+static const char* TAB_NAMES[] = {"OSC", "FLTR", "AMP", "F.ENV", "LFO", "FX", "DLX"};
+static const int NUM_TABS = 7;
 
 void drawZombieHeader() {
   drawZombiHeader("PROPHET SYNTH");
@@ -319,6 +319,48 @@ void zombieSynthDrawFXPage() {
   tft.drawCentreString("DELAY", 226, 225, 2);
 }
 
+// ─── DLX page (SYNTHWAVE DELUXE) ──────────────────────────────────────────────
+// Top row: OSC1/OSC2 octave spinners + VEL curve.  Sliders: GLIDE PWM COMP GATE OUT.
+static const char* VELCURVE_NAMES[3] = {"LIN","SOFT","HARD"};
+static void dlxSpin(int x, const char* lbl, const char* val) {
+  tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
+  tft.drawCentreString(lbl, x+33, 84, 2);
+  drawButton(x,    97, 20, 20, "-", false);
+  tft.setTextColor(THEME_ACCENT, THEME_BG);
+  tft.drawCentreString(val, x+33, 100, 2);
+  drawButton(x+46, 97, 20, 20, "+", false);
+}
+void zombieSynthDrawDLXPage() {
+  if (!zombieSynth) return;
+  char b[8];
+  // Octave spinners + vel curve (y=83..117)
+  snprintf(b, sizeof(b), "%+d", zombieSynth->getOsc1Octave());
+  dlxSpin(6, "O1 OCT", b);
+  snprintf(b, sizeof(b), "%+d", zombieSynth->getOsc2Octave());
+  dlxSpin(82, "O2 OCT", b);
+  // VEL curve button (x=170..250)
+  tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
+  tft.drawCentreString("VEL", 210, 84, 2);
+  drawButton(170, 97, 80, 20, VELCURVE_NAMES[constrain(zombieSynth->getVelCurve(),0,2)], true);
+  // SUB level spinner (reuse) x=256
+  tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
+  tft.drawCentreString("SUB", 289, 84, 2);
+  snprintf(b, sizeof(b), "%d", (int)(zombieSynth->getSubLevel()*100));
+  drawButton(256, 97, 20, 20, "-", false);
+  tft.setTextColor(THEME_ACCENT, THEME_BG);
+  tft.drawCentreString(b, 289, 100, 2);
+  drawButton(302, 97, 14, 20, "+", false);
+
+  // 5 sliders (y=122..230, h=108)
+  char gv[10];
+  snprintf(gv, sizeof(gv), "%.2fs", zombieSynth->getGlideTime());
+  drawVerticalSlider(4,   122, 60, 108, "GLIDE", zombieSynth->getGlideTime()/0.6f, gv);
+  drawVerticalSlider(67,  122, 60, 108, "PWM",   zombieSynth->getPWMDepth()/0.45f);
+  drawVerticalSlider(130, 122, 60, 108, "COMP",  zombieSynth->getCompAmount());
+  drawVerticalSlider(193, 122, 60, 108, "GATE",  zombieSynth->getGateThresh()/0.1f);
+  drawVerticalSlider(256, 122, 60, 108, "OUT",   zombieSynth->getOutGain()/2.0f);
+}
+
 // ─── Main draw ───────────────────────────────────────────────────────────────
 void zombieSynthDraw() {
   if (!synthParams.needsRedraw) return;
@@ -333,6 +375,7 @@ void zombieSynthDraw() {
     case 3: zombieSynthDrawFilterEnvPage(); break;
     case 4: zombieSynthDrawLFOPage();       break;
     case 5: zombieSynthDrawFXPage();        break;
+    case 6: zombieSynthDrawDLXPage();       break;
   }
 
   synthParams.needsRedraw = false;
@@ -441,6 +484,32 @@ void zombieSynthHandleTouch() {
         synthParams.fxDelayDiv = (synthParams.fxDelayDiv + 1) & 3;
         zombieSynth->setDelayDivision(120.0f, synthParams.fxDelayDiv);
         changed = true;
+      }
+      break;
+    }
+    case 6: { // DLX page
+      // Sliders (continuous)
+      float gl = zombieSynth->getGlideTime()/0.6f;
+      if (handleSliderTouch(4,  122, 60, 108, gl))  { zombieSynth->setGlideTime(gl*0.6f);   changed = true; }
+      float pw = zombieSynth->getPWMDepth()/0.45f;
+      if (handleSliderTouch(67, 122, 60, 108, pw))  { zombieSynth->setPWMDepth(pw*0.45f);
+                                                      if (zombieSynth->getPWMRate()<0.1f) zombieSynth->setPWMRate(4.0f);
+                                                      changed = true; }
+      float cp = zombieSynth->getCompAmount();
+      if (handleSliderTouch(130,122, 60, 108, cp))  { zombieSynth->setCompAmount(cp);       changed = true; }
+      float ga = zombieSynth->getGateThresh()/0.1f;
+      if (handleSliderTouch(193,122, 60, 108, ga))  { zombieSynth->setGateThresh(ga*0.1f);  changed = true; }
+      float og = zombieSynth->getOutGain()/2.0f;
+      if (handleSliderTouch(256,122, 60, 108, og))  { zombieSynth->setOutGain(og*2.0f);     changed = true; }
+      // Buttons (justPressed)
+      if (touch.justPressed) {
+        if (isButtonPressed(6,  97, 20, 20)) { zombieSynth->setOsc1Octave(zombieSynth->getOsc1Octave()-1); changed=true; }
+        if (isButtonPressed(52, 97, 20, 20)) { zombieSynth->setOsc1Octave(zombieSynth->getOsc1Octave()+1); changed=true; }
+        if (isButtonPressed(82, 97, 20, 20)) { zombieSynth->setOsc2Octave(zombieSynth->getOsc2Octave()-1); changed=true; }
+        if (isButtonPressed(128,97, 20, 20)) { zombieSynth->setOsc2Octave(zombieSynth->getOsc2Octave()+1); changed=true; }
+        if (isButtonPressed(170,97, 80, 20)) { zombieSynth->setVelCurve((zombieSynth->getVelCurve()+1)%3); changed=true; }
+        if (isButtonPressed(256,97, 20, 20)) { zombieSynth->setSubLevel(zombieSynth->getSubLevel()-0.05f); changed=true; }
+        if (isButtonPressed(302,97, 14, 20)) { zombieSynth->setSubLevel(zombieSynth->getSubLevel()+0.05f); changed=true; }
       }
       break;
     }
