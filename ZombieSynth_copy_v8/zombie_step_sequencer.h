@@ -95,6 +95,8 @@ struct SequencerTrack {
   float   trackPan;      // -1..+1
   int     soundPatchIdx; // last factory preset loaded (display only)
   SynthPatch trackPatch;   // per-track full synth patch used on note-on
+  uint8_t directionMode; // 0=FWD 1=REV 2=PINGPONG 3=RANDOM
+  uint8_t randOctave;    // 0/1 — random ±1 octave per trigger
   // Runtime state (not saved)
   int     currentStep;
   int     tickCount;
@@ -102,6 +104,7 @@ struct SequencerTrack {
   int     repeatCounter; // loops completed (for EVERY-N conditions)
   int     ratchetCount;
   int     ratchetTick;
+  int     _pingDir;      // +1/-1 for ping-pong
 
   int division() const { return SEQ_DIV_TICKS[constrain(divIdx, 0, 3)]; }
 
@@ -109,6 +112,7 @@ struct SequencerTrack {
     length = 16; divIdx = 1; scale = 0; rootNote = 0; octave = 3;
     muted = false; soloed = false; trackVolume = 1.0f; trackPan = 0.0f;
     soundPatchIdx = 0;
+    directionMode = 0; randOctave = 0; _pingDir = 1;
     // Default patch: open SAW bass with sensible ADSR
     memset(&trackPatch, 0, sizeof(SynthPatch));
     strncpy(trackPatch.name, "DEFAULT", PRESET_NAME_LEN);
@@ -319,6 +323,8 @@ private:
 
     // Octave 3 = middle C area (MIDI 48–59)
     int raw  = step.note + (tr.octave - 3) * 12;
+    // Random ±1 octave variation per trigger (synthwave/acid flavour).
+    if (tr.randOctave) raw += ((int)random(3) - 1) * 12;
     int note = tr.quantizeNote(constrain(raw, 0, 127));
 
     // Per-track volume scales velocity.
@@ -338,6 +344,29 @@ private:
     int interval     = max(1, div / (int)step.ratchets);
     tr.ratchetCount  = step.ratchets - 1;
     tr.ratchetTick   = interval;
+  }
+
+  // Advance currentStep per the track's direction mode, incrementing
+  // repeatCounter when a full cycle completes (back at the start).
+  void advanceStep(SequencerTrack& tr) {
+    int len = tr.length;
+    switch (tr.directionMode) {
+      case 1: // REVERSE
+        if (--tr.currentStep < 0) { tr.currentStep = len - 1; tr.repeatCounter++; }
+        break;
+      case 2: // PING-PONG
+        tr.currentStep += tr._pingDir;
+        if (tr.currentStep >= len - 1) { tr.currentStep = len - 1; tr._pingDir = -1; tr.repeatCounter++; }
+        else if (tr.currentStep <= 0)  { tr.currentStep = 0;       tr._pingDir = 1; }
+        break;
+      case 3: // RANDOM
+        tr.currentStep = (len > 0) ? (int)random(len) : 0;
+        if (tr.currentStep == 0) tr.repeatCounter++;
+        break;
+      default: // FORWARD
+        if (++tr.currentStep >= len) { tr.currentStep = 0; tr.repeatCounter++; }
+        break;
+    }
   }
 
   void processTick() {
@@ -365,13 +394,10 @@ private:
         tr.ratchetTick   = max(1, div / (int)step.ratchets);
       }
 
-      // Step advance
+      // Step advance (direction-aware)
       if (++tr.tickCount >= tr.division()) {
         tr.tickCount = 0;
-        if (++tr.currentStep >= tr.length) {
-          tr.currentStep = 0;
-          tr.repeatCounter++;
-        }
+        advanceStep(tr);
         triggerStep(t);
       }
     }
@@ -473,9 +499,11 @@ public:
     swingTickCtr  = 0;
     for (int t = 0; t < MAX_SEQ_TRACKS; t++) {
       SequencerTrack& tr = patterns[activePattern].tracks[t];
-      tr.currentStep   = 0; tr.tickCount    = 0;
+      tr.currentStep   = (tr.directionMode == 1) ? (tr.length - 1) : 0;
+      tr.tickCount    = 0;
       tr.gateCountdown = 0; tr.repeatCounter = 0;
       tr.ratchetCount  = 0; tr.ratchetTick  = 0;
+      tr._pingDir      = 1;
       triggerStep(t);
     }
     if (clockMode == CLOCK_OUT && _midiSendByteCB) _midiSendByteCB(0xFA);
@@ -750,7 +778,9 @@ public:
       *p++ = (uint8_t)(st.velocity & 0x7F);
       *p++ = (uint8_t)(st.gate & 0x1F);
       *p++ = (uint8_t)(st.probability);
-      *p++ = 0;
+      // Step-0's reserved byte carries per-track direction + random-octave
+      // (zero on older blobs = FWD / off, so the format stays compatible).
+      *p++ = (s == 0) ? (uint8_t)((tr.directionMode & 0x03) | ((tr.randOctave & 1) << 2)) : 0;
       *p++ = (uint8_t)st.cutoffLock;
       *p++ = (uint8_t)st.panLock;
     }
@@ -781,7 +811,11 @@ public:
       tr.steps[s].velocity    = *p++ & 0x7F;
       tr.steps[s].gate        = *p++ & 0x1F; if (tr.steps[s].gate == 0) tr.steps[s].gate = 1;
       tr.steps[s].probability = *p++;
-      p++;  // reserved
+      uint8_t reserved = *p++;   // step-0 carries track direction + rand-octave
+      if (s == 0) {
+        tr.directionMode = reserved & 0x03;
+        tr.randOctave    = (reserved >> 2) & 1;
+      }
       if (version >= 3) {
         tr.steps[s].cutoffLock = (int8_t)*p++;
         tr.steps[s].panLock    = (int8_t)*p++;

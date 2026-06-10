@@ -1,6 +1,19 @@
 /*******************************************************************
- ZOMBIE SS PROPHET-8 SYNTHESIZER  v3.6
+ ZOMBIE SS / SYNTHWAVE BASS SEQUENCER DELUXE  v4.0
  Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+
+ v4.0 SYNTHWAVE DELUXE:
+ - 7 oscillator waveforms (added SmoothSquare + Cos); 3 sound sources
+   (osc1/osc2/sub) with independent octave (-2..+2) and detune.
+ - Glide/portamento, PWM (pulse-width modulation), velocity response curves.
+ - Dynamics: one-knob compressor, noise gate, output gain (+ existing drive,
+   soft-clip, limiter, warmth EQ).
+ - Per-track playback direction (FWD/REV/PINGPONG/RANDOM) + random-octave,
+   persisted in the existing pattern blob (step-0 reserved byte, fully
+   backward compatible).
+ - New DLX touch page + ~25 new MIDI CCs so the touch screen and MIDI both
+   control everything.
+
 
  v3.6 Full-project audit pass:
  - PRESETS: loading a preset now pushes the SUB-OSC to the engine (Moog/Reese

@@ -612,6 +612,18 @@ static void seqDrawTrack() {
   // ── SOUND PATCH (y=178) ──────────────────────────────────────────────────
   int pIdx = constrain(tr->soundPatchIdx, 0, NUM_FACTORY-1);
   drawSpinner(178, "SNDPATCH", factoryPresets[pIdx].name);
+
+  // ── DIR + RND OCT (right margin of the SCALE/OCT rows) ────────────────────
+  static const char* DIRN[4] = {"FWD","REV","PNG","RND"};
+  tft.fillRoundRect(270, 124, 46, 17, 3, THEME_BG);
+  tft.drawRoundRect(270, 124, 46, 17, 3, THEME_OUTLINE);
+  tft.setTextColor(THEME_PRIMARY, THEME_BG);
+  tft.drawCentreString(DIRN[constrain((int)tr->directionMode,0,3)], 293, 126, 2);
+  bool ro = tr->randOctave;
+  tft.fillRoundRect(270, 160, 46, 17, 3, ro ? THEME_WARNING : THEME_BG);
+  tft.drawRoundRect(270, 160, 46, 17, 3, THEME_OUTLINE);
+  tft.setTextColor(ro ? THEME_BG : THEME_PRIMARY, ro ? THEME_WARNING : THEME_BG);
+  tft.drawCentreString("R-OCT", 293, 162, 2);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1711,6 +1723,17 @@ static void seqTouchTrack() {
   if (isButtonPressed(243, 178, 22, 17)) {
     tr->soundPatchIdx = (tr->soundPatchIdx + 1) % NUM_FACTORY;
     tr->trackPatch = factoryPresets[tr->soundPatchIdx];
+    seqNeedsRedraw = true; return;
+  }
+  // DIR cycle (x=270, y=124)
+  if (isButtonPressed(270, 124, 46, 17)) {
+    tr->directionMode = (tr->directionMode + 1) & 0x03;
+    tr->_pingDir = 1;
+    seqNeedsRedraw = true; return;
+  }
+  // RND OCT toggle (x=270, y=160)
+  if (isButtonPressed(270, 160, 46, 17)) {
+    tr->randOctave = tr->randOctave ? 0 : 1;
     seqNeedsRedraw = true; return;
   }
 }
