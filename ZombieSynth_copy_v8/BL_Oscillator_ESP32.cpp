@@ -146,10 +146,11 @@ IRAM_ATTR float BLOscillator::process() {
 
         case WAVE_SINE:
         case WAVE_COS: {
-            // COS = sine with a +90° phase offset.  Identical alone, but it
-            // changes the summed waveshape when mixed with other oscillators.
-            uint32_t ph = (waveform == WAVE_COS) ? phaseQ + 0x40000000u : phaseQ;
-            float phaseF = (float)ph * kInv2p32;
+            // COS = sine with a +90° (0.25 cycle) phase offset.  Using a small
+            // float offset (not a large 0x40000000 int literal) keeps this IRAM
+            // function's literal pool small — avoids the l32r relocation error.
+            float phaseF = (float)phaseQ * kInv2p32;
+            if (waveform == WAVE_COS) phaseF += 0.25f;
             sample = sinf(TWO_PI * phaseF);
             break;
         }
