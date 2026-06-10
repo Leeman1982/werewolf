@@ -338,7 +338,7 @@ void drawMenu() {
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
   tft.drawCentreString("ZOMBIE SS", 160, 8, 4);
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString("PROPHET SYNTHESIZER  v3", 160, 38, 2);
+  tft.drawCentreString("SYNTHWAVE DELUXE v4.0", 160, 38, 2);
 
   // Status line
   SynthEngine* synth = getZombieSynth();
@@ -408,7 +408,7 @@ void setup() {
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
   tft.drawCentreString("ZOMBIE SS", 160, 75, 4);
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString("PROPHET SYNTHESIZER v3", 160, 112, 2);
+  tft.drawCentreString("SYNTHWAVE DELUXE v4.0", 160, 112, 2);
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
   tft.drawCentreString("Building BL wavetables...", 160, 148, 2);
   delay(800);
