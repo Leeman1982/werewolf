@@ -338,7 +338,7 @@ void drawMenu() {
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
   tft.drawCentreString("ZOMBIE SS", 160, 8, 4);
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString("SYNTHWAVE DELUXE v4.0", 160, 38, 2);
+  tft.drawCentreString("DELUXE v4.0  -  2.4\" CYD", 160, 38, 2);
 
   // Status line
   SynthEngine* synth = getZombieSynth();
@@ -391,26 +391,35 @@ void exitToMenu() {
 // ── Setup ──────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  Serial.println("ZOMBIE SS v3 — initializing (BL wavetable oscillators)");
+  Serial.println("ZOMBIE SS / 2.4\" CYD (ESP32-2432S024) — initializing");
 
-  // Touch SPI
+  // Touch SPI (XPT2046 on its own VSPI bus — pins per 2.4\" CYD doc)
   mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
   ts.begin(mySpi);
-  ts.setRotation(1);
+  ts.setRotation(1);   // landscape, matches the 320x240 UI
 
   // Display
   tft.init();
   tft.setRotation(1);
-  tft.invertDisplay(true);   // Required for ESP32-2432S028R colour fix
+  // ── 2.4" CYD colour polarity ───────────────────────────────────────────────
+  // If colours look INVERTED (e.g. the red background appears cyan/teal), change
+  // CYD24_INVERT to 1 (or 0) and re-flash.  Default 0 = normal for 2432S024.
+  #define CYD24_INVERT 0
+  tft.invertDisplay(CYD24_INVERT);
+  tft.fillScreen(THEME_BG);
+
+  // First-boot / hold-to-recalibrate touch calibration (saved to flash).
+  initTouch();
   tft.fillScreen(THEME_BG);
 
   // Splash screen
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
-  tft.drawCentreString("ZOMBIE SS", 160, 75, 4);
+  tft.drawCentreString("ZOMBIE SS", 160, 70, 4);
   tft.setTextColor(THEME_ACCENT, THEME_BG);
-  tft.drawCentreString("SYNTHWAVE DELUXE v4.0", 160, 112, 2);
+  tft.drawCentreString("SYNTHWAVE DELUXE v4.0", 160, 107, 2);
   tft.setTextColor(THEME_TEXT_DIM, THEME_BG);
-  tft.drawCentreString("Building BL wavetables...", 160, 148, 2);
+  tft.drawCentreString("2.4\" CYD  (2432S024)", 160, 128, 2);
+  tft.drawCentreString("Building BL wavetables...", 160, 150, 2);
   delay(800);
 
   // Init synth engine

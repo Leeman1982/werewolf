@@ -42,8 +42,8 @@
 //#define RPI_DISPLAY_TYPE // 20MHz maximum SPI
 
 // Only define one driver, the other ones must be commented out
-//#define ILI9341_DRIVER       // Generic driver for common displays
-#define ILI9341_2_DRIVER     // Alternative ILI9341 driver, see https://github.com/Bodmer/TFT_eSPI/issues/1172
+#define ILI9341_DRIVER       // 2.4" CYD (ESP32-2432S024) — per the setup doc
+//#define ILI9341_2_DRIVER   // use THIS instead if the display is blank/garbled (it's the 2.8" USB-C 2432S028R variant)
 //#define ST7735_DRIVER      // Define additional parameters below for this display
 //#define ILI9163_DRIVER     // Define additional parameters below for this display
 //#define S6D02A1_DRIVER
@@ -112,8 +112,8 @@
 // If colours are inverted (white shows as black) then uncomment one of the next
 // 2 lines try both options, one of the options should correct the inversion.
 
-#define TFT_INVERSION_ON   // REQUIRED for ESP32-2432S028R (CYD with USB-C)
-// #define TFT_INVERSION_OFF
+// #define TFT_INVERSION_ON   // (the 2.8" USB-C 2432S028R needs this)
+#define TFT_INVERSION_OFF     // 2.4" 2432S024 — normal colours (code toggle CYD24_INVERT can override)
 
 
 // ##################################################################################
@@ -356,7 +356,7 @@
 // #define SPI_FREQUENCY  20000000
 //#define SPI_FREQUENCY  27000000
 // #define SPI_FREQUENCY  40000000
-#define SPI_FREQUENCY  55000000 // STM32 SPI1 only (SPI2 maximum is 27MHz)
+#define SPI_FREQUENCY  40000000 // 2.4" CYD — 40MHz is reliable (per setup doc; was 55MHz on 2.8")
 // #define SPI_FREQUENCY  80000000
 
 // Optional reduced SPI frequency for reading TFT
