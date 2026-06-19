@@ -61,6 +61,7 @@ static bool calReadRaw(int &rx, int &ry) {
   while (ts.touched() && n < 40) { TS_Point p = ts.getPoint(); sx += p.x; sy += p.y; n++; delay(5); }
   if (n < 4) return false;
   rx = (int)(sx / n); ry = (int)(sy / n);
+  Serial.printf("[touch] raw=(%d,%d) n=%d\n", rx, ry, n);   // diagnostics — report these if touch still misbehaves
   while (ts.touched()) delay(10);   // wait for release
   delay(250);
   return true;

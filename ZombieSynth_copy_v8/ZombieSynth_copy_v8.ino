@@ -152,7 +152,11 @@
 
 // ── Global objects ─────────────────────────────────────────────────────────
 SPIClass mySpi = SPIClass(VSPI);
-XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
+// NOTE: construct WITHOUT the IRQ pin.  Passing XPT2046_IRQ puts the library in
+// interrupt-gated mode where touched() only reads the panel after a PENIRQ edge;
+// on the CYD that interrupt is unreliable and touched() then never returns true.
+// Omitting it forces pure SPI polling on every touched() call (rock-solid).
+XPT2046_Touchscreen ts(XPT2046_CS);
 TFT_eSPI tft = TFT_eSPI();
 
 MIDIInput  midiInput;
