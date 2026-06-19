@@ -398,9 +398,10 @@ void setup() {
   ts.begin(mySpi);
   ts.setRotation(1);   // landscape, matches the 320x240 UI
 
-  // Backlight — GPIO 21 must be driven HIGH before tft.init() or screen stays dark.
-  pinMode(21, OUTPUT);
-  digitalWrite(21, HIGH);
+  // Backlight — GPIO 27 on 2.4" CYD (ESP32-2432S024).  The 2.8" board uses GPIO 21;
+  // on the 2.4" the backlight rail is wired to GPIO 27 instead.
+  pinMode(27, OUTPUT);
+  digitalWrite(27, HIGH);
 
   // Display
   tft.init();

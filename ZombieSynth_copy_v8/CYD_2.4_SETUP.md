@@ -42,9 +42,15 @@ later, just hold the screen while powering on.
 | Touch lands in the wrong place | Hold the screen while powering on to re-run calibration |
 | Flicker / display noise | Lower `SPI_FREQUENCY` to `27000000` in `User_Setup.h` |
 
-## Pinout (unchanged from 2.8")
+## Pinout (key differences from 2.8")
+
+| Signal | 2.4" (ESP32-2432S024) | 2.8" (ESP32-2432S028R) |
+|--------|----------------------|------------------------|
+| TFT Backlight | **GPIO 27** | GPIO 21 |
+| I2S LRCLK | **GPIO 21** | GPIO 27 |
+
 - **Touch (XPT2046, VSPI):** IRQ 36, MOSI 32, MISO 39, CLK 25, CS 33
-- **Display (ILI9341, HSPI):** MISO 12, MOSI 13, SCLK 14, CS 15, DC 2, BL 21
-- **Audio I2S (PCM5102):** BCLK 22, LRCLK 27, DIN 17 (remap `I2S_DATA_PIN` in
+- **Display (ILI9341, HSPI):** MISO 12, MOSI 13, SCLK 14, CS 15, DC 2, BL **27**
+- **Audio I2S (PCM5102):** BCLK 22, LRCLK **21**, DIN 17 (remap `I2S_DATA_PIN` in
   `synth_engine.h` if needed)
 - **MIDI in:** GPIO 35

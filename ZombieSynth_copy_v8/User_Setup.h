@@ -128,7 +128,7 @@
 // driven with a PWM signal or turned OFF/ON then this must be handled by the user
 // sketch. e.g. with digitalWrite(TFT_BL, LOW);
 
-#define TFT_BL   21            // LED back-light control pin
+#define TFT_BL   27            // LED back-light control pin (GPIO 27 on 2.4" CYD — different from 2.8" which uses GPIO 21)
 #define TFT_BACKLIGHT_ON HIGH  // Level to turn ON back-light (HIGH or LOW)
 
 

@@ -21,7 +21,7 @@
 // Audio output – PCM5052 DAC via I2S
 #define I2S_NUM      I2S_NUM_0
 #define I2S_BCK_PIN  22
-#define I2S_WS_PIN   27
+#define I2S_WS_PIN   21   // 2.4" CYD: GPIO 27 is the TFT backlight — LRCLK moves to GPIO 21
 #define I2S_DATA_PIN 17
 
 // ── Wavetable dimensions ──────────────────────────────────────────────────────
