@@ -398,6 +398,10 @@ void setup() {
   ts.begin(mySpi);
   ts.setRotation(1);   // landscape, matches the 320x240 UI
 
+  // Backlight — GPIO 21 must be driven HIGH before tft.init() or screen stays dark.
+  pinMode(21, OUTPUT);
+  digitalWrite(21, HIGH);
+
   // Display
   tft.init();
   tft.setRotation(1);
