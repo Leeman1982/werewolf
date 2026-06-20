@@ -5,16 +5,13 @@
 #include <HardwareSerial.h>
 
 // MIDI input handling for 5-pin DIN
-// 5-pin DIN MIDI uses GPIO 35 (input-only, perfect for MIDI RX)
-// Note: GPIO 16 is RGB LED green, cannot be used
-// USB MIDI can be added later with USB Host library if needed
+// GPIO 35 is input-only — perfect for MIDI RX (no signal contention possible)
 
 #define MIDI_SERIAL_RX 35  // 5-pin DIN MIDI input (input-only pin)
 #define MIDI_BAUD_RATE 31250
-// MIDI TX is opt-in: most CYD GPIOs are claimed by the TFT + I2S DAC.
-// Define MIDI_SERIAL_TX in your build (or before including this header) to
-// enable MIDI clock OUT, e.g. -DMIDI_SERIAL_TX=16 (requires removing the
-// onboard RGB-green LED).  -1 = TX disabled (default, no clock output).
+// MIDI TX is opt-in. Define MIDI_SERIAL_TX in your build (or before including
+// this header) to enable MIDI clock OUT, e.g. -DMIDI_SERIAL_TX=16.
+// -1 = TX disabled (default, no clock output).
 #ifndef MIDI_SERIAL_TX
 #define MIDI_SERIAL_TX -1
 #endif
@@ -153,7 +150,7 @@ public:
     midiSerial = new HardwareSerial(2);
     midiSerial->begin(MIDI_BAUD_RATE, SERIAL_8N1, MIDI_SERIAL_RX, MIDI_SERIAL_TX);
 
-    Serial.println("MIDI Input initialized (5-pin DIN on GPIO 35)");
+    Serial.println("MIDI initialized (5-pin DIN RX=GPIO35)");
   }
 
   // ── MIDI output (for clock sync) ────────────────────────────────────────────

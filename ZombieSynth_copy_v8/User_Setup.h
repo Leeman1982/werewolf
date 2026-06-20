@@ -73,8 +73,8 @@
 // For ST7735, ST7789 and ILI9341 ONLY, define the colour order IF the blue and red are swapped on your display
 // Try ONE option at a time to find the correct colour order for your display
 
-//  #define TFT_RGB_ORDER TFT_RGB  // Colour order Red-Green-Blue
-#define TFT_RGB_ORDER TFT_BGR  // Colour order Blue-Green-Red (REQUIRED for ESP32-2432S028R)
+#define TFT_RGB_ORDER TFT_RGB  // Colour order Red-Green-Blue
+//#define TFT_RGB_ORDER TFT_BGR  // Colour order Blue-Green-Red (only needed for ESP32-2432S028R/CYD)
 
 // For M5Stack ESP32 module with integrated ILI9341 display ONLY, remove // in line below
 
@@ -112,7 +112,7 @@
 // If colours are inverted (white shows as black) then uncomment one of the next
 // 2 lines try both options, one of the options should correct the inversion.
 
-#define TFT_INVERSION_ON   // REQUIRED for ESP32-2432S028R (CYD with USB-C)
+// #define TFT_INVERSION_ON   // Only needed for ESP32-2432S028R (CYD with USB-C)
 // #define TFT_INVERSION_OFF
 
 
@@ -203,13 +203,15 @@
 // For ESP32 Dev board (only tested with ILI9341 display)
 // The hardware SPI can be mapped to any pins
 
-#define TFT_MISO 12
-#define TFT_MOSI 13
-#define TFT_SCLK 14
-#define TFT_CS   15  // Chip select control pin
-#define TFT_DC    2  // Data Command control pin
-//#define TFT_RST   4  // Reset pin (could connect to RST pin)
-#define TFT_RST  -1  // Set TFT_RST to -1 if display RESET is connected to ESP32 board RST
+// ESP32 WROOM + ILI9341 3.2" 14-pin SPI module (display + touch share one SPI bus)
+// VSPI defaults: MOSI=23, MISO=19, SCLK=18
+#define TFT_MISO 19
+#define TFT_MOSI 23
+#define TFT_SCLK 18
+#define TFT_CS   15  // Display chip select (LCD CS pin 3)
+#define TFT_DC    2  // Data/Command (DC/RS pin 5)
+#define TFT_RST   4  // Reset (RESET pin 4)
+//#define TFT_RST  -1  // Use -1 if RST tied to ESP32 EN/RST
 
 // For ESP32 Dev board (only tested with GC9A01 display)
 // The hardware SPI can be mapped to any pins
