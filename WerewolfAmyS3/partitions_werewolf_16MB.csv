@@ -1,0 +1,9 @@
+# WerewolfAmyS3 partition table — 16 MB flash (ESP32-S3 N16R8)
+# The "sf2" data partition holds the embedded GM SoundFont (8 MB),
+# memory-mapped at runtime. Flash it with scripts/flash_soundfont.sh.
+# Name,    Type, SubType, Offset,   Size
+nvs,       data, nvs,     0x9000,   0x5000
+phy_init,  data, phy,     0xe000,   0x1000
+factory,   app,  factory, 0x10000,  0x6F0000
+sf2,       0x40, 0x00,    0x700000, 0x800000
+spiffs,    data, spiffs,  0xF00000, 0x100000
