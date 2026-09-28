@@ -1,0 +1,1146 @@
+# Carpenter Synth — "Synthesize the Season" edition
+
+A multi-engine analogue-architecture workstation on the **exact CS-80 / New
+York Ripper board**: a 128x64 SSD1309 OLED over I2C, one rotary encoder with
+push, five panel buttons, two performance switches (OCT DOWN/UP) and two
+performance pots (CUTOFF/RESONANCE) — same pinout, same panel, same solder
+joints as that hardware's own `config.h`. MIDI OUT stays on **GP1**.
+
+This build layers two ports on top of each other. It starts from the
+song-arranger branch's 4-track step sequencer (time signatures, chains, 200
+riffs, songs) and its full seventeen-engine synth side, and carries both
+onto the main xtro board's exact hardware and pinout — a straight
+UI/control-mapping port, with the sound side untouched byte-for-byte. The
+original single 8-voice virtual-analog engine had already been replaced with
+the multi-engine architecture from this project's own ESP32-S3 branch ("a
+multi-engine analogue-architecture workstation... covering the synths behind
+the scores of John Carpenter, Fabio Frizzi and Claudio Simonetti"), ported
+back onto this RP2350 board. **CS-80, Minimoog, Prophet-5, Prophet-10,
+ARP 2600, ARP Odyssey, Mellotron, Oberheim Four-Voice/SEM, Jupiter-8 and
+System 100 are all fully modelled and selectable — every engine the source
+project modelled at all, plus three more it never staged: a Moog Modular
+System 55/III (the wildcard — the actual synth behind both *Halloween*
+(1978) and *Suspiria* (1977)), and an Oberheim OB-X and a PPG Wave 2.3 (both
+Claudio Simonetti/Goblin instruments this project's own influences named
+outright). Four more round the roster out to seventeen, past subtractive
+analogue polysynths entirely: a Korg MS-20, a Yamaha DX7 (this codebase's
+only FM/phase-modulation engine), an ARP/Solina String Ensemble (its only
+organ-style divide-down engine) and a Sequential Prophet-VS (its only
+vector-synthesis engine).** Sixteen of the seventeen are modelled from each
+machine's own architecture; the DX7 is the exception and runs the real
+Dexed/MSFA engine, for reasons set out in [Synth engines](#synth-engines)
+below — which also makes this firmware GPLv3 as a whole, see
+[Licensing](#licensing).
+
+Splash and branding:
+
+1. **Boot splash** — "CARPENTER SYNTH" set in the **Minotaur** typeface, over
+   a "STEP SEQ & SYNTH" tagline and a **ZOMBI SS** footer (see
+   `UI::bootStatus()` in `ui.cpp`). The 240x240 build's splash was one RGB565
+   bitmap with its type baked in; that can't survive the drop to a 128x64
+   1-bit panel, so the same three elements are rebuilt in code here. The
+   wordmark is real Minotaur, not an approximation in a stock bitmap font:
+   `tools/ttf_to_xbm.py` rasterizes the three fixed strings straight from
+   `extras/font/minotaur.ttf` into `minotaur_splash.h` (that header's banner
+   carries the exact command to regenerate it). Fixed strings rather than a
+   full glyph set, because these three are the only places the face is used
+   and a whole font would cost flash for nothing.
+2. **Sketch name** — `CarpenterSynth.ino` in place of `UltimateSynthNYR.ino`.
+
+**Retired in this port:** the old single engine's "ZOMBI SS" patch-bay mode
+(named for the System 100, but really a graphical front end onto that one
+engine's specific modulation routing — LFO dest, ring mod, hard sync, filter
+mode) has no equivalent shape on a CS-80 or a Minimoog, so it's gone rather
+than carried forward broken. This is unrelated to the actual **Roland System
+100** synth engine now modelled below — that's a full new engine, not a
+revival of the old patch-bay UI — see [Synth engines](#synth-engines).
+
+Target: Raspberry Pi Pico 2 / RP2350 with 16 MB flash.
+
+---
+
+## First flash — read this
+
+The display comes up **before anything else** in `setup()` and then reports each
+boot stage on the bottom line: `BOOTING → DSP TABLES → EFFECTS → STORAGE →
+SEQUENCER → MIDI GP1 → AUDIO → READY`. If the machine ever stops during
+startup, the screen names the stage it stopped in.
+
+**If the screen stays blank**, work down this list:
+
+1. **CPU Speed → 150 MHz.** This is the stock default and always boots. Nothing
+   here needs 250 MHz — core1 measures its own load and runs fewer voices
+   instead of glitching. Move up to 250 MHz once it is running.
+2. **Board → Generic RP2350.** The stock "Raspberry Pi Pico 2" profile only
+   offers 4 MB flash layouts.
+3. **Hold SHIFT (GP10) while powering up.** Safe boot: skips the filesystem
+   entirely and starts on built-in defaults.
+4. Check the OLED's I2C wiring — SDA=GP4, SCL=GP5, address `0x3C` — and that
+   the **U8g2** library is installed.
+
+There is **no watchdog** in this firmware, deliberately — same as NYR. Flash
+operations are the only things slow enough to trip one, and resetting the chip
+part-way through a flash write is strictly worse than waiting for it.
+
+A missing or unformatted filesystem is **not fatal**: the instrument is fully
+playable from RAM and the screen says `READY (NO FS)`. To get saving working,
+go to **SETTINGS → FORMAT FS** and **hold SHIFT** while pressing. That takes
+tens of seconds on an 8 MB partition and shows `FORMATTING FS...` while it
+works — it is not frozen.
+
+---
+
+## Wiring
+
+The **exact CS-80 / New York Ripper board** — same pinout, same OLED, same
+panel. Nothing below is a free choice; it's taken directly from that
+hardware's own `config.h`, unchanged.
+
+```
+                     RP2350 (Pico 2, 16 MB)
+                    ┌────────────────────────┐
+  MIDI IN  ─────────┤ GP0                    │
+  MIDI OUT ─────────┤ GP1   (PIO UART)       │
+  OCT DOWN ─────────┤ GP2                    │
+  OCT UP   ─────────┤ GP3                    │
+  OLED SDA ─────────┤ GP4   hardware I2C     │
+  OLED SCL ─────────┤ GP5                    │
+  ENC A    ─────────┤ GP6                    │
+  ENC B    ─────────┤ GP7                    │
+  ENC SW   ─────────┤ GP8                    │
+  BTN PLAY  ────────┤ GP9                    │
+  BTN SHIFT ────────┤ GP10                   │
+  BTN PAGE  ────────┤ GP11                   │
+  BTN TRACK ────────┤ GP12                   │
+  BTN MUTE  ────────┤ GP13                   │
+                    │                        │
+  CLICK/GATE OUT ───┤ GP14  (metronome)      │
+                    │                        │
+  I2S BCK  ─────────┤ GP15                   │
+  I2S LRCK ─────────┤ GP16  (= BCK + 1)      │
+  I2S DIN  ─────────┤ GP17                   │
+                    │                        │
+  POT CUTOFF    ────┤ GP26  ADC0             │
+  POT RESONANCE ────┤ GP27  ADC1             │
+                    └────────────────────────┘
+```
+
+GP18-25 and GP28-29 are unused and free for anything else you want to add
+(an SD card, extra I/O, ...).
+
+### PCM5102A DAC
+| PCM5102A | Pico 2 |
+|----------|--------|
+| VCC | 3V3 |
+| GND | GND |
+| BCK | GP15 |
+| LCK | GP16 |
+| DIN | GP17 |
+| SCK | GND (internal PLL) |
+| FMT | GND (I2S standard) |
+| XSMT | 3V3 (unmute) |
+
+### OLED (128x64, SSD1309)
+Hardware I2C — SDA=GP4, SCL=GP5, address `0x3C`, up to 1 MHz bus clock
+(`OLED_I2C_HZ` in `config.h`; 400 kHz is the safe fallback). Driven with
+**U8g2** (`U8G2_SSD1309_128X64_NONAME0_F_HW_I2C`, full-buffer mode) rather
+than a hand-rolled register-bang driver — see `ui.h`'s `SynthOled` typedef,
+which also has SH1106/SSD1306 fallbacks defined (untested on this board;
+SSD1309 is the confirmed part).
+
+### Rotary encoder + 5 buttons + 2 performance switches
+The encoder (EC11-style, quadrature + push) is on GP6/GP7/GP8. PLAY, SHIFT,
+PAGE, TRACK and MUTE are momentary, wired to GND (internal pull-ups, no
+external parts needed), on GP9-GP13. OCT DOWN/OCT UP on GP2/GP3 are the same
+kind of switch, wired identically — see **Controls** below for the full
+mapping, and **Hardware controls** for what the OCT buttons and the two pots
+actually do.
+
+### MIDI OUT on GP1 — why it needs a PIO UART
+
+GP1 is **not** a hardware-UART TX pin on RP2350. UART0 TX can only be routed to
+GP0, GP12, GP16 or GP28, so `Serial1.setTX(1)` would silently do nothing. The
+firmware therefore builds the UART out of a **PIO state machine**
+(arduino-pico's `SerialPIO`), which can drive any GPIO with exact 31250-baud
+timing. GP0 is set up as MIDI IN on the same PIO port, so an opto-isolated input
+can be added later without moving anything.
+
+```
+GP1 ──── 220R ──── DIN pin 5   (or TRS-A tip)
+3V3 ──── 220R ──── DIN pin 4   (or TRS-A ring)
+GND ─────────────── DIN pin 2   (shield / sleeve)
+```
+
+To go back to NYR's original wiring (TX on GP0), set `MIDI_USE_PIO_UART 0` and
+`PIN_MIDI_TX 0` / `PIN_MIDI_RX 1` in `config.h`.
+
+---
+
+## Building
+
+**Arduino IDE** with Earle Philhower's arduino-pico core
+(`https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`).
+
+| Setting | Value |
+|---------|-------|
+| Board | **Generic RP2350** (the stock "Raspberry Pi Pico 2" profile only offers 4 MB flash layouts) |
+| Flash Size | **16 MB (Sketch: 8 MB, FS: 8 MB)** — an FS partition is required for saving |
+| CPU Speed | **150 MHz to start**; 250 MHz for the heaviest engines at full polyphony (CS-80's 16 channel paths, Prophet-10's 10 voices) |
+| CPU Architecture | ARM |
+| USB Stack | **"Pico SDK"** — required for SETTINGS → USB DRIVE. `FatFSUSB` registers through the core's own pluggable-USB layer; the Adafruit TinyUSB stack is a hard compile error against it |
+
+**Two libraries**, one of which is vendored here:
+
+1. **U8g2** (oliver/olikraus) — install via Library Manager.
+2. **Synth_Dexed** — the DX7 engine. A ready-to-install copy sits at
+   `extras/Synth_Dexed/`; copy that whole folder into your Arduino libraries
+   directory as `Synth_Dexed`:
+   * Windows: `Documents\Arduino\libraries\Synth_Dexed\`
+   * macOS/Linux: `~/Arduino/libraries/Synth_Dexed/`
+
+   Restart the IDE afterwards. This copy already carries Pico2Dexed's RP2350
+   patches — no CMSIS-DSP, no Teensy `AudioStream`, plain stdlib maths and its
+   own small `arm_math` shim — so no extra library or build flag is needed.
+   **Do not** substitute an upstream Synth_Dexed from elsewhere: those target
+   a Teensy with an audio shield and assume real CMSIS-DSP, and will not
+   build for RP2350.
+
+I2S, `SerialPIO`, FatFS and `FatFSUSB` all ship with the core — there is no
+MIDI library and no AudioTools dependency.
+
+Put every file in a folder named `CarpenterSynth/` and open
+`CarpenterSynth.ino`.
+
+Do **not** re-clock at runtime. The core sets the clock, brings USB up and
+launches core1 before `setup()` runs, so changing it there breaks USB
+enumeration. Use Tools → CPU Speed.
+
+### Licensing
+
+**This firmware as a whole is GPLv3.** That follows from the DX7 engine:
+`Synth_Dexed` is Holger Wirtz' MicroDexed layer (**GPLv3**) over Google's
+*music-synthesizer-for-android* FM core (**Apache-2.0**), and linking it makes
+the combined work GPLv3. Both licence texts ship with the vendored copy —
+`extras/Synth_Dexed/LICENSE-GPL3.txt` and `LICENSE-APACHE2.txt`. In practice
+that means anyone you distribute a built binary to is entitled to the
+corresponding source. The Minotaur display font is separate and freeware; see
+`extras/font/MINOTAUR_LICENSE.txt`.
+
+Check the Arduino IDE's build output on your own setup for the exact flash/
+RAM figures — U8g2's full-buffer SSD1309 mode is a 1 KB SRAM footprint, far
+smaller than the 240x240 RGB565 canvas this port used to carry.
+
+### Tests
+
+The logic half of the firmware (DSP tables, effects, sequencer, and every
+engine's DSP/panel layer — all seventeen engines, CS-80 through PPG Wave 2.3,
+the MS-20, DX7, String Ensemble and Prophet-VS) builds and runs natively,
+with AddressSanitizer + UndefinedBehaviorSanitizer on every run:
+
+```
+./tests/run.sh
+```
+
+The hardware half — `ui.cpp`, `controls.cpp`, `midi.cpp`, `storage.cpp` and
+the sketch itself — can't be *run* on the host, but it is type-checked
+there against the real U8g2 headers (cloned on first use into
+`tests/.u8g2/`), so a wrong method signature, a missing constructor
+argument or a `u8g2_font_*` name that does not exist fails here instead of
+in the Arduino IDE:
+
+```
+./tests/syntax_check.sh
+```
+
+Table accuracy, effect boundedness at maximum feedback, sequencer timing
+(jitter, swing, ratchets, micro-timing, probability, chords, stuck notes,
+scale quantisation, Euclid counts, external clock), plus per-engine coverage:
+CS-80's no-self-oscillation/Q-vs-cutoff/saw-glitch/IL-AL-envelope/Hz-per-volt
+behaviour (unchanged from the original single-engine build), the
+Minimoog/Prophet ladder's self-oscillation threshold, the ARP 2600/Odyssey
+filter's damping floor reaching true zero (the opposite design choice from
+the CS-80's own filter), panel/CC-map integrity, every real engine's voices
+actually returning to idle after release with every envelope parameter
+maxed, the voice allocator's polyphony ceiling, Prophet-5 UNISON's held-note
+handling, Master applying as linear gain (not baked into the saturator) on
+every engine, and all 15 alternate filter flavours staying finite across
+every engine that offers them (fifteen of the seventeen now — every engine
+except the CS-80 and the DX7, which has no filter of any kind), plus a
+dedicated test for OB-X's HOLD "unison chord" feature (a released chord
+transposes and replays from a single new key, repeatably — see
+`testObxHoldChordTranspose`) and one for the String Ensemble's mono bass
+coupler correctly re-targeting the next-lowest held note instead of going
+silent when the currently-sounding one releases (`testStringEnsembleBassCoupler`).
+
+The DX7 gets its own group, because it is the one engine whose DSP this
+project did not write: that every one of the **256 factory ROM voices
+actually produces sound** (the regression test for the `Env::update()` bug
+described under **Synth engines**, and the one that would catch it coming
+back), that the panel's OP1..OP6 reach the operators the DX7 calls OP1..OP6
+(Dexed indexes them in data order, which starts at OP6 — getting that
+reversal wrong edits the wrong operator and says nothing about it), that
+presets really are cartridge voices, that a released note stops and a reused
+voice slot does not strand one, that snapshot/restore brings back both the
+cartridge voice and the edits made on top of it, and that BANK's filesystem
+extension (USB DRIVE, above) reaches through cleanly via fakes standing in
+for `voicebank.cpp` — including that it stays completely unreachable, not a
+build break, anywhere those hooks are left unwired, which is the host tests'
+own default state.
+
+`tests/run.sh` builds the vendored Synth_Dexed into `tests/.dexed/` on first
+run and caches it. That build keeps AddressSanitizer but drops UBSan and the
+warning flags, for reasons the script itself sets out: MSFA's FM core is
+fixed-point DSP that deliberately relies on wrapping signed arithmetic, and
+UBSan reports it every audio block.
+The dispatch/voice-lifecycle and filter-flavour checks are written against
+`NUM_ENGINES`/`ENGINE_IS_STUB` rather than a hardcoded engine list, so every
+new engine this project has added since — most recently the MS-20, DX7,
+String Ensemble and Prophet-VS — was exercised automatically the moment it
+was wired into `engine.cpp`; only `testVariableFilterFlavours`'s own array
+(which has to know which engines expose a FILT TYPE row at all) needs each
+new one added by hand.
+
+---
+
+## Controls
+
+One rotary encoder, five buttons, two performance switches and two
+performance pots. **Everything in the sequencer is reachable from the
+panel — MIDI CC is never required.**
+
+The encoder replaces the old D-pad: turning it moves a cursor or changes a
+value, and its push switch stands in for the old A button (short = select,
+long = back). PLAY, PAGE, TRACK and MUTE stand in for the old
+START/SELECT/X/Y buttons. SHIFT is the modifier, held rather than pressed.
+
+| Control | Short | Long |
+|---------|-------|------|
+| **ENCODER turn** | move cursor / change value | — |
+| **ENCODER push** | select / enter-exit edit | back (on the grid: toggle step) |
+| **PLAY** | start / stop all tracks | toggle the selected step |
+| **PAGE** | menu / back | **save everything** |
+| **TRACK** | next track (in STEP EDIT: next step) | copy pattern to clipboard |
+| **MUTE** | toggle the selected step | paste clipboard into this pattern |
+| **SHIFT** | modifier (hold) | — |
+| **OCT DOWN / OCT UP** | transpose an external MIDI keyboard -3..+3 octaves | — |
+| **CUTOFF / RESONANCE pots** | live filter cutoff/resonance on the current engine | — |
+
+### SHIFT (hold) combinations
+| Combination | Action |
+|-------------|--------|
+| SHIFT + turn (grid) | change BPM |
+| SHIFT + turn (lists) | move / adjust ×8 |
+| SHIFT + turn (CHAIN) | edit the repeat count |
+| SHIFT + turn (TOOLS, Riff row) | change riff category |
+| SHIFT + turn (name editor) | move the caret |
+| SHIFT + PLAY | arm / disarm live record |
+| SHIFT + MUTE | mute / unmute the current track |
+| SHIFT + TRACK | next pattern |
+| SHIFT + push (PRESETS) | save the current patch to a user slot |
+| SHIFT + push (SONG BROWSE) | delete the song in this slot |
+| SHIFT + TRACK (STEP EDIT) | previous step |
+
+There is a **HELP** page in the menu with the same summary on the device.
+
+### Main grid
+
+Two rows of eight cells show one 16-step page. Bar height inside a cell is the
+step's velocity, so a page reads as a dynamics contour. Corner squares mark
+accent (top-left), slide (top-right), ratchet (bottom-right) and parameter
+locks (bottom-left). The playhead fills its cell solid (inverted); the
+cursor is an outlined frame around it.
+
+### Hardware controls
+
+**OCT DOWN / OCT UP** (GP2/GP3) transpose incoming MIDI performance notes by
+an octave at a time (-3..+3), independent of the sequencer's own patterns,
+which are left untouched. Only heard when **Kbd Play** (MIDI SET page) is on
+— same gate the un-transposed notes already went through.
+
+**CUTOFF / RESONANCE pots** on GP26/GP27, continuously read and applied
+directly, the same as a real analogue synth's non-motorized panel: turning
+the knob always wins, including over a recalled preset's stored value. They
+reach whichever engine is currently live, through
+`engineFilterCutoffParamId()`/`engineFilterResonanceParamId()` (`engine.h`):
+each engine's own CUTOFF/RESONANCE parameters (Minimoog calls its own
+"Emphasis", matching the real panel) on every engine but the CS-80, whose
+architecture has no single cutoff knob — there it's Brilliance (the global
+offset that opens both channels' filters together) and Resonance, exactly
+as the single-engine CS-80 build's own hardware pots already used them. The
+MS-20 has two independently resonant sections in series, so the pots drive
+its **lowpass** — the one whose PEAK is the sound the instrument is known
+for.
+
+The one engine where both pots are **inert** is the **DX7**: an FM engine
+has no filter at all, and nothing else on its panel is a filter in
+disguise. The dispatch returns `ENGINE_PARAM_NONE` (`param_types.h`) there
+and the sketch skips the write, rather than falling back to "parameter 0" —
+which is a real, writable parameter on every engine (`DX_OP1_RATIO` here),
+so a knob labelled CUTOFF would otherwise have been quietly re-tuning an
+operator.
+
+---
+
+## Sequencer
+
+Four independent 64-step lanes. **Track 1 plays the internal synth** and echoes
+to MIDI OUT; **tracks 2–4 are MIDI-only lanes** for outboard gear, each on its
+own channel — that is what the GP1 MIDI OUT is for.
+
+### Per step
+| Field | Range | Notes |
+|-------|-------|-------|
+| Active | on/off | |
+| Notes 1–4 | 0–127 | **chords** — up to four notes per step |
+| Note count | 1–4 | |
+| Velocity | 1–127 | |
+| Gate | 1–200 % | over 100 % overlaps into the next step |
+| Probability | 0–100 % | |
+| Micro | −50..+50 % | timing nudge off the grid, per step |
+| Ratchet | ×1–×8 | retriggers inside the step |
+| Accent | on/off | +30 velocity |
+| Slide | on/off | legato overlap + portamento |
+| Tie | on/off | holds through the next step |
+| **P-locks ×4** | any parameter | per-step parameter automation |
+
+**Parameter locks** are momentary: the first step to lock a parameter records
+what it was, and everything is restored when the transport stops — a locked
+pattern never silently rewrites the patch you saved.
+
+### Per pattern
+Length (1–64), swing (0–66 %), subdivision (1/16, 1/8, 1/4, 1/2, 1/32, 1/8T,
+1/16T, 1/4., 1/8.), scale + root (16 scales, notes quantised on output),
+transpose (±24), MIDI channel, time signature, and an optional linked synth
+preset.
+
+Each track picks its own subdivision and length, so a 64-step 1/16 lead can run
+against a 12-step 1/8-triplet bassline — which is also what makes per-pattern
+**time signature** work. 4/4, 3/4, 2/4, 5/4, 7/4, 6/8, 7/8, 5/8, 9/8 and 12/8
+are offered as a Pattern Options field, but a time signature is a label plus a
+*suggested* length (picking "5/4" sets length to 20 and nothing else) — the
+sequencer only ever plays `length` steps at `subdiv` rate and always has, so
+chaining patterns of different time signatures together (see Chain, below)
+needed no new engine timing logic, just this label on top of what already
+worked. Length can still be hand-tuned after picking a time signature.
+SETTINGS → **Def Time Sig** sets what a newly-cleared pattern starts on.
+
+### Tools page
+Euclidean fill (hits + rotation), randomise within the pattern's scale,
+humanise (velocity + micro-timing), a library of **200 riffs**, clear, copy
+and paste.
+
+Riffs are grouped into 5 categories — **Classic** (the original 24: house,
+techno, trance, acid...), **Retrowave**, **Grindhouse**, **70s** and **80s**
+(44 apiece for the new four) — so 200 is still fast to page through: turning
+the encoder on the Riff row steps through the current category, SHIFT+turn
+steps the category itself (ALL removes the filter).
+
+### Chain
+Up to 8 pattern slots with repeat counts, per track. Chained patterns keep
+their own length, subdivision and time signature, so a chain can move from
+4/4 into 7/8 and back mid-song exactly the way it can already move from a
+16-step pattern into a 12-step one — it's the same mechanism (see Time
+signature, above).
+
+**LOAD SONG** / **SAVE SONG** rows at the bottom of the CHAIN page open the
+song browser — see Songs, below.
+
+### Songs
+A song is a snapshot of all 4 tracks' chains, which pattern each is sitting
+on, and the tempo — reachable from the Chain page's LOAD SONG / SAVE SONG
+rows. **200 slots**, browseable as a scrollable list (SONG 001..200); SAVE
+opens the same character-wheel name editor as a synth preset.
+
+Songs are deliberately lightweight: they *reference* pattern slots rather than
+embedding copies of their contents — the same trade-off the chain feature
+already makes day to day, and it's what keeps 200 of them cheap (~90 bytes
+each). The trade-off: editing a pattern changes it for every song that points
+at that slot. That's a feature for a live set (fix a part once, every song
+using it is fixed), not a bug, but it does mean a song is not a self-contained
+archive of exactly how it sounded when saved, if patterns keep getting edited
+afterward.
+
+SHIFT+A on a song slot deletes it.
+
+### Sync
+- **Internal**, with MIDI clock out (24 PPQN, plus start/stop/continue) from track 1 only.
+- **External** — slaved to incoming MIDI clock. Every subdivision divides 6 ticks
+  exactly, so the grid stays locked with no rounding drift, and clock out is
+  suppressed while slaved so two boxes can't fight over the tempo.
+
+### Live record
+SHIFT+PLAY arms it. Notes from MIDI IN land on the nearest step; past the
+halfway point they go to the step you are heading into.
+
+### Metronome
+A 6 ms gate pulse on GP14 at the top of each beat — drives an LED or a click
+input without touching the audio path.
+
+---
+
+## Synth engines
+
+Exactly **one engine is live at a time**, selected from `MENU → ENGINE` like
+powering on a different instrument — not a per-note timbre choice. That keeps
+the RAM budget to the size of the largest single engine (the Prophet-10's 10
+voices) rather than the sum of every engine that will eventually exist, and
+it matches how these machines actually existed: nobody plugged a CS-80 and a
+Minimoog into the same keybed and got one instrument out of it.
+
+Every engine implements the same free-function surface (`engine.h`) under its
+own name prefix (`cs80*`, `mm*`, `p5*`, ...), dispatched by a
+`switch (currentEngine)` in `engine.cpp` — switches, not virtuals, matching
+the rest of this codebase's style. Each engine's own param array is
+session-persistent RAM: switching away and back preserves whatever you'd
+tweaked, same as leaving one real instrument's knobs alone while you play
+another. Presets are namespaced by engine on the filesystem, since a
+Minimoog patch's parameters mean nothing to a Prophet-5 — **28-31 curated
+factory presets per real engine, plus 64 user slots per engine.**
+
+| Engine | Voices | As heard in | Status |
+|---|---|---|---|
+| **Yamaha CS-80** | 8 x 2 channels | Fabio Frizzi (*Zombi 2*, *The Beyond*) | Full — 30 factory presets |
+| **Minimoog** | 1 (mono) | John Carpenter, Claudio Simonetti (Goblin) | Full — 30 factory presets |
+| **Sequential Circuits Prophet-5** | 5 | John Carpenter, Fabio Frizzi | Full — 29 factory presets |
+| **Sequential Circuits Prophet-10** | 10 | John Carpenter | Full (shares the Prophet-5 circuit and its 29 presets, doubled) |
+| **ARP 2600** | 1 (mono) | John Carpenter (*Halloween*, *Assault on Precinct 13*) | Full — 29 factory presets |
+| **ARP Odyssey** | 2 (duophonic) | John Carpenter | Full (shares the ARP 2600 circuit and its 29 presets, duophonic) |
+| **Mellotron** | 6 | Fabio Frizzi (*Zombi 2*, *City of the Living Dead*) | Full — 31 factory presets, Choir loop from a real recording — see below |
+| **Oberheim Four-Voice / SEM** | 4 | John Carpenter | Full — 30 factory presets |
+| **Roland Jupiter-8** | 8 | Claudio Simonetti (*Tenebre*) | Full — 30 factory presets |
+| **Roland System 100 (101/102)** | 1 (mono) | Claudio Simonetti | Full — 30 factory presets |
+| **Moog Modular System 55/III** | 1 (mono) | Dan Wyman (*Halloween*), Felice Fugazza (*Suspiria*) | Full — 31 factory presets — the wildcard, see below |
+| **Oberheim OB-X** | 8 | Claudio Simonetti (Goblin) | Full — 31 factory presets |
+| **PPG Wave 2.3** | 8 | Claudio Simonetti (Goblin) | Full — 28 factory presets |
+| **Korg MS-20** | 1 (mono) | Claudio Simonetti (Goblin) | Full — 31 factory presets |
+| **Yamaha DX7** | 8 | John Carpenter | Not modelled — runs the real Dexed/MSFA engine; 256 factory ROM voices on the BANK row (128 in the preset list) + up to 2048 more from `.syx` cartridges over USB DRIVE |
+| **ARP/Solina String Ensemble** | 10 poly + 1 mono bass | John Carpenter | Full — 31 factory presets |
+| **Sequential Prophet-VS** | 8 | John Carpenter | Full — 29 factory presets |
+
+Every engine in the table above is fully modelled — there are no stubs left,
+including the wildcard, the Simonetti/Goblin additions, and the four most
+recent engines that round the roster out past subtractive analogue
+polysynths entirely. `stub_engine.*` stays wired into `engine.cpp`'s
+dispatch as a safety net (selecting any not-yet-built engine is always
+silent, never a crash) in case an eighteenth engine is ever staged.
+
+**CS-80**: two fully independent channels per voice (every note sounds
+both), a frequency-independent-in-time sawtooth reset glitch, filters whose
+damping floor never reaches zero (so they cannot self-oscillate — Q falls as
+cutoff rises), an IL/AL/A/D/R filter envelope where decay can act as a
+second slower attack, Hz/V pitch (not V/oct), a ring modulator swept by its
+own envelope. See `engine_cs80.*`/`cs80_voice.*`/`cs80_params.*`.
+
+The real instrument's two VCF sections don't share one exponential
+converter: a technical teardown of the CS filter found the highpass section
+tracking control voltage at 2V/octave against the lowpass section's standard
+1V/octave, i.e. the HPF needs twice the CV for the same pitch-domain sweep
+and so moves at half the LPF's rate for any shared modulation source. Every
+one of those sources — the filter envelope, the LFO, Brilliance, per-voice
+drift, velocity/aftertouch brightness — lands on one combined CV bus on the
+real instrument, so this asymmetry is modelled where that bus is built
+(`CS_HPF_TRACK_SCALE`, `config.h`), not duplicated per source: the two
+CUTOFF knobs themselves stay independent, exactly as before.
+
+**Minimoog**: three oscillators (six waveforms each) into a genuinely
+self-oscillating 4-pole ladder filter (`ladder_filter.h`) — above ~95%
+Emphasis it sustains its own tone with no input at all. Attack/Decay/Sustain
+only on both contours (no Release — the real Model D panel has none), and
+Oscillator Modulation (osc 3 or noise retunes osc 1/2 and/or the filter).
+
+Two things the real Model D's own service literature and panel legends get
+right that a generic 3-oscillator synth wouldn't: Oscillator 3's waveform
+switch names its "Triangle/Sawtooth" position differently from Oscillators 1
+and 2 — a plain **Reverse Sawtooth** (a mirrored downward ramp) rather than
+the triangle-sawtooth hybrid the other two get in that same switch position
+(`MMOsc::isOsc3` in `minimoog.h`). And the mixer itself — a CP3-style
+discrete transistor stage — has its own soft "OVERLOAD" clipping, upstream
+of and distinct from both the filter's own resonance-driven saturation and
+the final output stage: a documented, audible layer of the "fat Moog" sound
+that only shows up once the individual oscillator level knobs are run hot
+enough to beat against each other. Modelled as a mild tanh stage on the
+mixer sum, tuned to stay within a couple of percent of linear below ~30% so
+single- or two-oscillator patches (most bells, plucks, leads) pass through
+essentially unchanged.
+
+**Prophet-5 / Prophet-10**: two DCOs mixing Sawtooth and Pulse
+simultaneously, Oscillator B hard sync onto A (genuine sync, not FM), Poly-Mod
+routing the filter envelope and Osc B into Osc A's frequency and/or cutoff
+unscaled by the mod wheel, full four-stage ADSR on both filter and amp, and
+Unison (fans one note across every voice, handled inside the engine itself
+rather than the shared allocator). Oscillator B alone gets a third waveform
+the real panel gives it and Oscillator A never had — **Triangle**
+(`P5_OSCB_TRI`) — mixed in alongside its saw/pulse the same way.
+
+Deliberately absent: any velocity or aftertouch sensitivity in the audio
+path. The original Prophet-5/-10 keybed (Rev 1 through 3.x — everything
+this engine models) had neither; every note plays at the same level no
+matter how hard it's struck, and that didn't change until the 2020 Rev 4
+reissue, a different, later instrument. MIDI velocity and aftertouch are
+still accepted (so a sequencer or a modern controller can drive it) but
+never reach amplitude or anything else — see `p5RenderBlockE` in
+`prophet5.cpp`.
+
+**ARP 2600 / ARP Odyssey**: three VCOs into a mixer, a self-oscillating
+multimode state-variable filter (LP/BP/HP from one pass, selected by a mode
+switch, matching the real 4072 filter's 3-way switch), a genuine 4-stage
+ADSR on both filter and amp, a sample & hold fed from noise (patchable to
+pitch and/or filter), and a ring modulator that multiplies OSC1 and OSC2
+directly (no swept-sine carrier, unlike the CS-80's own ring mod). The
+2600's filter damping floor reaches true zero — in deliberate contrast to
+the CS-80's, which by design never does — which is what lets it
+self-oscillate and scream the way a real 4072 does. The Odyssey shares the
+identical voice circuit, just duophonic (2 voices) where the 2600 is
+strictly mono — its panel really did add a switchable Duo/Mono mode the
+2600 never had; see `arp2600.cpp`/`odyssey.cpp`.
+
+**Mellotron**: not a synthesiser at all on the real instrument — a bank of
+physical tape loops, one per key, started and stopped by a solenoid-and-
+pinch-roller mechanism. This engine models the *mechanism*: playback is a
+fixed recording resampled to pitch (not re-synthesised), Attack/Release are
+the tape motor's spin-up/brake time rather than a VCA envelope shape (no
+sustain *stage* — the tape just keeps running), and an independent Wow &
+Flutter LFO models the pinch roller's own mechanical speed instability.
+Regenerate `mellotron_samples.h` with `python3 tools/gen_mellotron_samples.py`
+if you ever want to retune either loop.
+
+The Choir loop is a **real recorded male choir sample**, not synthesis —
+`tools/samples/choir_source.wav` (a trimmed 2.5 s excerpt of a user-supplied
+recording), loop-crossfaded and downsampled to 11025 Hz 8-bit mono by
+`gen_choir()` in `tools/gen_mellotron_samples.py`. Two things had to be
+solved to turn a 44.1 kHz studio take into a seamless keyboard loop: (1) the
+recording sings a short phrase rather than holding one note (autocorrelation
+pitch-tracking found it moving C2 -> ~106 Hz -> F2 -> G2), so the loop
+source is one steady segment (the G2 region — the longest stable span and
+almost exactly standard pitch) rather than the whole take, since stacking
+the keyboard's own pitch-shift on top of an already-moving pitch would make
+every note sound like it was sliding; (2) a real recording has no built-in
+seam the way the still-synthesised Strings loop's integer-Hz partials do, so
+`_crossfade_loop()` blends the segment's tail into its own head before
+handing it to the downsampler, landing the seam between two originally-
+adjacent source samples instead of two arbitrary ones. `CHOIR_BASE_HZ`
+(98 Hz, the measured G2) tells the engine what pitch the loop already plays
+at so the keyboard tracks correctly.
+
+Past its tape mechanism, this engine also gets a CUTOFF/RESONANCE/FILT TYPE
+section (see Filter flavours, below) — a real M400 never had one, but it
+gives the Mellotron the same live sound-shaping depth as every subtractive
+engine here, which is what actually lets a session-recorded sample be
+sculpted into new characters (bright, dark, filtered/resonant, even a
+formant-filtered texture) from the panel rather than staying one fixed
+tone. FILT TYPE's STOCK option (the default) means no filter at all, so
+every existing preset's tone is untouched by this addition.
+
+**Oberheim Four-Voice/SEM**: four independent SEM voice cards, each two
+VCOs (sawtooth + variable pulse) into a 2-pole state-variable filter whose
+mode sweeps **continuously** LP→Notch→BP→HP off a single MODE knob rather
+than switching between fixed positions — a real SEM's most distinctive
+trait, and something no other filter in this codebase does (every other
+multimode filter here picks a mode, it doesn't blend through one). Real
+Four-Voice units were four separately hand-tuned SEM cards, never perfectly
+matched to each other, so each of the 4 voices here carries its own small
+fixed detune/filter/level offset (`OB_VOICE_DETUNE/FILT/LEVEL`) — more
+pronounced than the CS-80's own per-voice drift, since unit-to-unit mismatch
+is a famous, audible part of the real instrument's character rather than an
+incidental flaw to hide. See `oberheim.h`/`oberheim.cpp`.
+
+**Roland Jupiter-8**: 8 voices, each two true VCOs (this predates Roland's
+DCO-based Junos) with genuine audio-rate **cross modulation** (OSC2 into
+OSC1's frequency), OSC2 able to swap its square wave for noise and drop into
+a sub-audio LOW FREQ range for FM/pseudo-sample-and-hold effects, and a
+resonant lowpass switchable between 12dB and 24dB slope (cascading the same
+filter stage twice for the steeper setting — literally how the real
+switched-slope circuit works). No built-in chorus — a common misconception
+about the Jupiter-8 this engine deliberately doesn't repeat. See
+`jupiter8.h`/`jupiter8.cpp`.
+
+**Roland System 100 (101/102)**: deliberately just **one** melodic VCO —
+the real 101 keyboard synth's second "voice" was never a second tunable
+oscillator, so what plays alongside OSC1 here is a dedicated ring-modulator
+operand whose own pitch is only ever a *ratio* off the main oscillator, plus
+sample & hold fed from noise (patchable to pitch and/or filter, borrowing
+the 102 expander's own extra modulation slot). The standout feature is a
+second **non-voltage-controlled** highpass tone stage after the main
+resonant filter — a plain fixed one-pole HPF with no envelope or
+keyboard-tracking input reaching it at all, in deliberate contrast to every
+other filter parameter in this entire codebase, matching the real 101/102's
+separate VC-lowpass-plus-plain-HPF-knob signal path. See
+`system100.h`/`system100.cpp`.
+
+**Moog Modular System 55/III — the wildcard**: Dan Wyman scored *Halloween*
+(1978) and Felice Fugazza scored *Suspiria* (1977) — the two films this
+whole project is most directly named for and modelled around — on a real
+Moog modular system, not a Minimoog, ARP or Oberheim, even though Carpenter
+and Goblin/Simonetti's own studios had those too. This engine is that
+missing link: the actual patchable 904A-filter/VCO lineage the Minimoog
+already in this codebase is the compact, pre-wired, portable descendant of,
+built here as a genuinely different instrument rather than "a bigger
+Minimoog" — OSC2 hard-syncs OSC1 (the Minimoog has no sync at all), OSC3 is
+a true audio-rate FM carrier into OSC1 (the Minimoog's OSC3 is a slow
+modulator only, never an audio-rate one), a real ring modulator (OSC1×OSC2)
+and sample & hold, and — the standout modular-only trick — the filter
+envelope has a second destination knob (`FENV_TO_PITCH`) so one envelope can
+patch to both the filter *and* pitch simultaneously, a genuine modular
+"one envelope, two destinations" technique nothing else here models. Its
+STOCK filter deliberately reuses the exact same `LadderFilter` the Minimoog
+uses — the one case in this codebase where two engines share a "real
+hardware" filter model, because the real Moog Modular's 904A filter module
+*is* the circuit the Minimoog's ladder descends from. See
+`moogmodular.h`/`moogmodular.cpp`.
+
+**Oberheim OB-X**: Claudio Simonetti/Goblin's own credited rig — up to 8
+voice cards, each 2 VCOs (sawtooth or variable pulse) into the SAME
+12dB/octave state-variable filter design as this codebase's Four-Voice/SEM
+engine (the real OB-X's own filter genuinely IS the SEM's SVF, discrete-
+component, pre-dating the OB-Xa's later switch to Curtis chips), so it
+reuses that filter verbatim rather than re-deriving an equivalent one — the
+difference is the panel, not the circuit: OB-X wires only the LOWPASS
+output, with no continuous mode-morph knob. What sets it apart from a
+generic 2-VCO poly: CROSS MOD (audio-rate VCO2-into-VCO1 FM, the original
+OB-X's own panel feature before the OB-Xa replaced it with something else),
+a genuinely polyphonic sample & hold (each voice draws its own independent
+random value, not one shared value copied to all), and — the standout,
+name-checked-twice-in-period-documentation feature — a HOLD "unison chord"
+mode: hold a chord, let go, and it's memorized; the next single key
+transposes and replays the whole shape, repeatably, for one-finger stabs.
+Built entirely at the engine level, the same way this codebase's Prophet-5
+UNISON bypasses the shared voice allocator. See `obx.h`/`obx.cpp`.
+
+**PPG Wave 2.3**: also Claudio Simonetti/Goblin's own credited rig, and the
+one engine in this entire codebase that isn't an analogue-oscillator
+design: 8 voices, 2 DIGITAL wavetable oscillators per voice feeding an
+ANALOGUE SSM2044 4-pole lowpass and CEM3360 VCA — a genuine hybrid signal
+path. Modelled to the real format's own exact numbers: each "wave" is a
+single-cycle waveform 256 samples long, and 64 of them make up one
+wavetable that the oscillator continuously scans through at a WAVE POSITION
+that can sweep in real time — the real unit shipped 30 such tables; this
+engine generates 3 procedurally at boot (a brightness sweep, a two-formant
+vowel-ish sweep, and a pulse-width sweep) rather than reproducing an actual
+ROM dump, which isn't available here. Three independent envelope
+generators, not two: full ADSRs for filter and amp, plus a dedicated
+simpler AD envelope ("Env3" on the real panel) whose only job is sweeping
+the wave position — nothing else here has a modulation source dedicated to
+one destination like that. No anti-aliasing of the wavetables, ever,
+deliberately — the real PPG's fixed 256-sample tables alias at high
+pitches, and that grainy digital top end is a well-known, embraced part of
+the instrument's character, the same design choice this codebase's CS-80
+makes for its own un-band-limited reset glitch. See
+`ppgwave.h`/`ppgwave.cpp`.
+
+**Korg MS-20** — the vintage Korg mono synth pick: a genuinely aggressive
+patchable mono synth built from two separate filter sections in series
+(a 6dB HPF and a 12dB LPF, not one multimode filter), both able to
+self-oscillate on their own. EG1 is normalled to both VCOs' pitch; EG2 is
+normalled to *both* the filters' cutoff *and* the VCA together — one shared
+envelope for filter and amp, not two independent ones, the real panel's own
+economy. Both envelopes have a genuine post-release **HOLD** stage: on
+note-off the envelope freezes at its current level for a fixed time before
+actually releasing, "like holding a sustain pedal" — nothing else in this
+codebase's envelopes does that. VCO1 hard-syncs VCO2 (the direction flipped
+from every other synced engine here), and VCO2's own wave switch has a
+**RING MOD** (VCO1×VCO2) position as a third waveform choice, not a
+separate mix knob. Deliberately not modelled: the real ESP (External Signal
+Processor, an audio-in pitch/envelope tracker) — there's no audio input
+path on an all-digital instrument. See `ms20.h`/`ms20.cpp`.
+
+**Yamaha DX7** — this codebase's only FM (phase-modulation) engine, the one
+instrument here not built from oscillator→filter→VCA at all, and the **only
+one that is not modelled**. It drives the real thing: **Dexed**, itself built
+on Google's *music-synthesizer-for-android* FM core — the same engine
+MiniDexed and Pico2Dexed run — through the vendored `Synth_Dexed` library in
+`extras/Synth_Dexed/`.
+
+That is a deliberate reversal of this project's usual approach, and the
+reason is specific to the instrument. Every other engine here is an
+**analogue** machine, where a documented topology can be modelled and judged
+by ear against the records. The DX7 is a **digital** machine whose sound *is*
+its exact fixed-point arithmetic — operator phase accumulation, the EGS
+chip's rate/level envelope curves, the log-domain sine and exp2 tables. An
+approximation of those numbers is not a slightly-less-accurate DX7; it is a
+different synth. The hand-rolled 6-operator engine that used to sit here was
+exactly that, and it is gone.
+
+What the real engine brings over it:
+
+* **All 32 algorithms**, not 8 representative shapes.
+* **Real DX7 envelopes** — four independent Rate/Level pairs per operator
+  with the actual level-scaling table and rate scaling, not a 4-knob ADSR
+  standing in for them.
+* **Keyboard level scaling** (breakpoint, left/right depth and curve),
+  keyboard rate scaling, velocity sensitivity and amp-mod sensitivity, per
+  operator — everything that makes a DX7 patch respond to *where* and *how
+  hard* it is played, none of which the approximation had.
+* **The factory library**: all 8 ROM cartridges × 32 voices = **256 real
+  voices** (`dx7_rom.h`) — E.PIANO 1, TUB BELLS, BASS 1 — instead of
+  hand-written imitations of them.
+* **Real cartridges from a real drive**: SETTINGS → USB DRIVE (see
+  *Storage*, above) exports the filesystem so `.syx` files can be dropped
+  into `/banks` — up to `MAX_FS_BANKS` (64 by default) more 32-voice
+  cartridges on top of the 256 in ROM, picked up on the BANK row the moment
+  the drive is ejected.
+
+What it costs: the patch model here is *a cartridge voice plus edits*, not a
+freely-designed patch saved whole. A DX7 voice is 155 bytes and this
+codebase's preset/step-lock system stores 90 bytes per patch, so a preset
+records **which** cartridge voice, plus the panel rows listed below — not an
+arbitrary edited voice. The panel is BANK, VOICE, the six operator output
+levels, ALGORITHM, FEEDBACK, the full LFO page, the full pitch EG, and
+TRANSPOSE/TUNE/MONO/PORTA/BEND — every one a real DX7 parameter with an exact
+Dexed setter, and all of them read back from whichever cartridge voice is
+loaded, so the panel shows the patch rather than wherever the knobs were left.
+
+The engine itself never touches the filesystem: BANK reaching past ROM goes
+through three function pointers (`dxExtBankCount`/`dxExtBankName`/
+`dxExtGetVoice`, wired to `voicebank.cpp`'s real functions once at boot) that
+sit null — reachable only 0..7 — anywhere that hasn't wired them up,
+including the host tests. Turning BANK past whatever's actually plugged in
+lands on a harmless dead position (shown as `--`) rather than silence or
+garbage; the same "keep the current sound" rule covers a cartridge whose file
+was deleted after a preset was saved pointing at it.
+
+Polyphony is 8, against the real machine's 16: Dexed's per-note cost on
+RP2350 is the binding constraint. The CPU guard lowers it further under load
+like any other engine. There is no filter, deliberately — the real DX7
+doesn't have one either, which is also why the front-panel CUTOFF/RESONANCE
+pots are inert on this engine (see **Hardware controls**). See
+`dx7.h`/`dx7.cpp`.
+
+> **One real bug was found and fixed on the way in.** MSFA's `Env::update()`
+> jumps a held note's envelope straight to its sustain level (upstream,
+> verbatim: *"for now we simply reset ourselves at level 3"*), and Dexed runs
+> that refresh at the top of `getSamples()` whenever a voice load or a
+> parameter write has armed it. A note started in that window skips its
+> attack and decay and **begins at its sustain level** — which for every
+> percussive DX7 patch (piano, bass, clav, harpsichord, bell, pluck) is zero,
+> i.e. the note is silent. Measured across the whole factory library on the
+> host: **93 of the 256 ROM voices produced no output at all.** The fix is
+> `DxAdapter::settle()` in `dx7.cpp` — clear the pending refresh when nothing
+> is playing, so a stale one can never sit armed across a note-on — and
+> `testDx7EveryRomVoiceSounds` in `tests/test.cpp` locks it down. Anything
+> else driving this Dexed build (including the MedusaDexed project this port
+> came from) has the same bug.
+
+**ARP/Solina String Ensemble** — the one engine in this codebase built on
+organ-style **divide-down** technology (12 master oscillators and octave
+dividers) rather than a bank of individually-tuned VCOs, matching how the
+real 1974 string machine actually generates pitch. All of its character
+comes from six fixed, individually-level-controlled instrument voicings —
+Violin, Viola, Trumpet, Horn, Cello, Contrabass — each its own fixed
+one-pole tone colour, not a player-adjustable filter (a real M400 has no
+filter of any kind; a non-STOCK FILT TYPE row is still offered as an
+optional bonus, the same trade this codebase's Mellotron already makes),
+plus a three-line modulated-delay ensemble/chorus effect that *is* this
+instrument's sound, not a bypassable post-effect — it runs before and in
+addition to the shared chorus/delay/reverb chain every engine already has.
+Cello and Contrabass are genuinely different from the other four voicings:
+**monophonic**, restricted to the keyboard's lowest keys, driven by
+whichever held note in that range is currently lowest — a bass coupler
+built entirely at the engine level with its own held-note stack, the same
+technique this codebase's Prophet-5 UNISON and OB-X HOLD already use to
+bypass the shared voice allocator (see `testStringEnsembleBassCoupler` in
+`tests/test.cpp`). The simplest envelope in this whole codebase — just
+Attack ("Crescendo") and Release ("Sustain Length"), no decay or sustain
+*level* stage at all, since the real panel doesn't have one either. No
+glide, either: an organ-style divide-down instrument has no VCO to slew.
+See `stringens.h`/`stringens.cpp`.
+
+**Sequential Prophet-VS** — this codebase's only **vector-synthesis**
+engine: 4 digital oscillators (A/B/C/D) per voice, each one of 5 waveform
+types (the real 1986 flagship reads 127 stored single-cycle waveforms per
+oscillator; this engine models the waveform *types* rather than that
+library), mixed not by four independent level knobs but by **one shared
+X/Y position** inside a diamond with the four oscillators at its corners,
+crossfading all four simultaneously via bilinear interpolation — the one
+property that actually defines vector synthesis, and the real joystick's
+own "diamond" mixing law, preserved exactly. A dedicated **vector
+envelope** can move that same position on its own after a note starts,
+through two waypoints with an optional loop — the real instrument's own
+third envelope generator ("oscillator mix") doing a job no other envelope
+in this codebase does: animating a 2D position, not a single scalar. An
+LFO can also wobble the vector position directly for an automatic
+timbral crossfade, alongside the ordinary vibrato route. Genuine analogue
+filtering (a Curtis CEM3372-family resonant lowpass) on those fully
+digital oscillators is the same *hybrid* signal-path category as this
+codebase's PPG Wave, but an unrelated real chip and an unrelated
+oscillator technique (bilinear vector-crossfade of fixed waveforms, not a
+scanned wavetable). Voice count is 8, an exact match to the real
+instrument — no `MAX_VOICES` compromise needed here, unlike the DX7. See
+`prophetvs.h`/`prophetvs.cpp`.
+
+**Filter flavours**: Minimoog, Prophet-5/10, ARP 2600/Odyssey, the
+Mellotron, Oberheim Four-Voice/SEM, Jupiter-8, System 100, the Moog
+Modular, OB-X, PPG Wave 2.3, the MS-20, the String Ensemble and Prophet-VS
+each get a **FILT TYPE** row on their FILTER page — 16 options:
+STOCK (that engine's own modelled filter, or for the Mellotron and String
+Ensemble — which never had one — simply no filter at all, the source played
+exactly as modelled) plus 15 alternate character models (Moog ladder, MS-20,
+Oberheim SEM SVF, TB-303, Prophet/SSM2040, Juno/IR3109, ARP 4072,
+Steiner-Parker, Sallen-Key, CEM3320, a CS-80-inspired tilt, a series MS-20
+HP→LP, a formant/vocal triple-peak, a darker diode ladder, and an SVF whose
+RESONANCE morphs LP→BP→HP). CUTOFF and RESONANCE keep doing exactly what
+they already did, just through a different topology. See
+`variable_filter.h`. (CS-80 and DX7 don't get this — the CS-80's filter is
+the original build's code, kept verbatim, and the real DX7 has no filter of
+any kind to begin with — see above.)
+
+**Retired with the old single-engine build**: the "ZOMBI SS" patch-bay mode
+(named for the System 100, but a graphical front end onto that one engine's
+fixed LFO-dest/ring-mod/hard-sync/filter-mode routing) — there's no
+equivalent shape on a CS-80 or a Minimoog, so it did not carry forward. The
+System 100 *engine* above is unrelated and unaffected — a new model of the
+real instrument, not a revival of that old UI.
+
+---
+
+## Optimisation notes
+
+These principles were true of the original single-engine build and remain
+true of `dsp_tables.cpp`/`fx.cpp` (shared by every engine) and of each
+engine's own render path — `renderBlock()` in the sketch is now a thin
+dispatcher (drain the note queue, call `engineRenderBlock()`, measure the
+result), with the actual per-voice hot path living inside whichever engine
+is current (`engine_cs80.cpp`, `minimoog.cpp`, ...), not in the sketch:
+
+**No transcendentals on the audio path.** Sine, tanh and the filter coefficient
+all come from tables built into SRAM at boot. `sinf`, `expf`, `tanf`, `powf` and
+`sqrtf` are called at boot and at control rate only.
+
+**Cutoff lives in the log domain.** The filter takes a table *index*, not hertz.
+An octave of envelope, keytracking, velocity or LFO is then just
+`+= FILT_IDX_PER_OCT` — pitch-domain modulation with no `pow()` anywhere.
+
+**Two rates.** Oscillators, filter and amp envelope run per sample; glide, phase
+increments, the filter envelope and coefficient recomputation run at
+48 kHz / 8 = 6 kHz. Coefficient recomputation was the single largest cost in the
+original build (an `expf()` per voice *per sample*).
+
+**Bit masks, not modulo.** Every ring buffer — delay, chorus, sine table, voice
+queue — is a power of two, so wrapping is one `AND`.
+
+**Parameters are snapshotted per block**, not read as volatiles inside the sample
+loop.
+
+**Automatic overload guard.** Core1 measures its own render time. Above 90 % it
+sheds a voice; below 65 % it takes one back — down to the CS-80's floor of 1
+voice, since a 1-voice engine (Minimoog) needs to be able to shed to exactly
+that. Clicks are worse than a stolen voice. The PERF page shows measured CPU,
+live voice count, free RAM and clock.
+
+**Effects are one shared instance, not one per engine.** Chorus/delay/reverb
+together are ~108 KB; only one engine ever renders at a time (see
+[Synth engines](#synth-engines)), so `g_fxChorus`/`g_fxDelay`/`g_fxReverb`
+(`fx.h`) are shared globals every engine calls `.begin()` on when it
+activates, rather than each engine owning a private (and mostly idle) copy.
+
+The single-engine build's own history of bugs found and fixed in its
+`renderBlock()` — a stereo-detune double-render, a ladder-filter highpass
+precision collapse, Master Volume baked into the saturator, a mono/poly
+mode-switch voice leak — lives in this repo's git history along with that
+engine's code; none of it applies to the current multi-engine build. The
+Master-into-the-saturator bug in particular recurred independently in each
+newly-ported engine and was fixed the same way in each: a fixed drive
+constant sized from that engine's own hottest stock preset (`CS_MIX_DRIVE`,
+`MM_MIX_DRIVE`, `P5_MIX_DRIVE`, ...), with Master applying as pure linear
+gain *after* the saturator — see `testMasterIsLinearPostSaturationGain` in
+`tests/test.cpp`.
+
+**One RP2350-side bug found in this port itself, not inherited from the
+ESP32 source: Minimoog's oscillators and self-oscillating ladder filter ran
+unconditionally, even with no note held.** Every other engine here
+(Prophet-5/10, CS-80, Mellotron) skips a fully-idle voice's oscillator/
+filter work outright (`if (!alive) { va.busy[i] = 0; continue; }`) — Minimoog's
+port was missing that skip, so between notes its ladder filter kept being
+driven by the still-running oscillators at whatever Emphasis was dialled in,
+with nothing ever giving it a rest. Once Emphasis got anywhere near the
+self-oscillation threshold this built into an audibly distorted, glitchy
+tone with no way back to silence short of a full engine switch (which
+reconstructs the voice from scratch) — reported as "sounds distorted,
+stopping and restarting the pattern doesn't really fix it." Fixed in
+`minimoog.cpp` to match the pattern every other engine already uses.
+
+**A second, unrelated bug found in every engine's INIT patch and factory
+presets, also inherited from the ESP32 source rather than introduced by this
+port: enum/toggle parameters set to a literal option index instead of a
+properly scaled raw byte.** Every `*Decode()`/`*FormatParameterE()` in this
+codebase reads a `PK_ENUM`/`PK_TOGGLE` parameter as a *proportion* of the
+0..127 (or, for CS-80, 0..255) raw range, not as a direct index —
+`i = (int)(raw/max * numOpts)`. A preset author writing the literal index
+(e.g. `2`, meaning "the third option") instead of a value scaled into that
+option's slice of the range gets back option 0 almost every time, since a
+small literal like `2` is a tiny fraction of any range wider than one or two
+steps. Reported as "the presets are all screwed up with the Moog... all set
+to 32 on octave" — confirmed exactly: Minimoog's `MM_INIT` set every
+oscillator's octave field to raw `2` intending `"8'"` (index 2 of 5), which
+decoded to `"32'"` (index 0) instead. The same pattern turned up well beyond
+Minimoog and well beyond octave: Prophet-5's default keyboard-tracking
+amount, several presets' Poly-Mod/Ring-Mod/oscillator-sync toggles silently
+staying off because a literal `1` (0.8% of 127) never crosses the toggle's
+`>0.5` threshold, ARP 2600's `OSC2 TRACK` defaulting off so oscillator 2 sat
+at a near-0 Hz fixed pitch instead of tracking the keyboard, and a related
+but distinct mistake on the *same* Minimoog INIT patch — `OSC2/3 FINE`
+(a continuous ±700-cent bipolar knob, not an enum) set to a value that
+implicitly assumed the CS-80's 0..255 raw convention instead of this
+engine's actual 0..127 one, detuning oscillator 2 almost a tritone sharp of
+oscillator 1 by default. `param_types.h` now defines `EI(idx, n)`, a
+compile-time macro returning the raw byte at the center of option `idx`'s
+bucket out of `n` options — chosen so it round-trips through the decode
+formula above regardless of `n` — and every engine's INIT patch and factory
+preset table was rewritten with it (and, for continuous knobs like `FINE`,
+with a value actually checked against what it decodes to) rather than
+patched around. See `param_types.h`'s comment above `EI()` for the exact
+reasoning, and use it for any new preset content going forward.
+
+**A third bug, caught in review before ever reaching the board: the Moog
+Modular wildcard's oscillators didn't advance.** Every oscillator elsewhere
+in this codebase follows one of two conventions — a self-contained
+`next(wave)` that advances phase and returns a waveform value in one call
+(CS-80), or an explicit `advance()` that increments phase and returns `t`,
+consumed by separate `tri(t)/saw(t)/pulse(t)` methods (every engine ported
+since). `Mm2Osc`'s first draft was a broken hybrid of the two: `next(wave)`
+only *read* the existing phase without ever incrementing it, while a
+separate, half-used `advance()` sat alongside it — so calling `next()` alone
+(as the render loop did for OSC1 and OSC3) froze that oscillator at a
+constant value forever, and OSC2's one `advance()` call before its own
+`next()` didn't help, since `next()` still never advanced past whatever
+`advance()` had already produced. All three oscillators combined would have
+sounded like an inert three-note dial-tone. Fixed by merging both methods
+into one self-contained `next(wave, wrapped=nullptr)` matching the CS-80
+convention, caught during a code-review pass comparing every new engine's
+oscillator shape against every prior one, before the wildcard was ever
+committed.
+
+**A fourth bug, reported directly: most of the 200-riff library wasn't 200
+distinct riffs.** The Retrowave/Grindhouse/70s/80s categories (44 riffs
+apiece) were each built from only 4-5 truly unique 16-step note/velocity
+patterns, cycled through 11 renamed groups — e.g. every one of NEON DRIVE,
+NIGHT RACER, CHROME EDGE, SUNSET GRID, TURBO, ARCADE GLOW, NIGHT CITY, LASER
+HIGHWAY, VELOUR and RETROGRADE was byte-for-byte the same four riffs as
+OUTRUN, just relabelled. Only the 24 Classic riffs were actually all
+distinct. Fixed by regenerating all 176 with genuinely independent note
+shapes, accent contours and gate values per category (`tools/gen_riffs.py`,
+not shipped on the board — a one-off content-generation script, not part of
+the build), verified programmatically to have zero repeats at every level
+(notes, notes+velocity, and the full riff) both within each category and
+across all 200, while keeping every existing name, category and the total
+count unchanged. One thing that check caught along the way: because note
+shape and velocity contour are now chosen independently instead of as a
+hand-paired set, a few riffs would have landed a real (non-rest) note on a
+step whose paired velocity contour happened to carry a 0 there, silently
+dropping that note — fixed with a downbeat-weighted fallback accent so
+every sounding step always has an audible velocity.
+
+---
+
+## Storage
+
+FatFS on the 16 MB part (not LittleFS, so the partition can also be exported
+over USB — see below). Patterns are stored per track, settings (including
+which engine was live and its live patch) in `/settings.bin`, user presets in
+`/presets/` — namespaced by engine in the filename (`e<id>_u<slot>.bin`),
+since a preset is only meaningful for the engine it was saved under — songs
+in `/songs/` (200 slots, ~90 bytes each — see Songs, above), and DX7 voice
+cartridges in `/banks/` (see below).
+
+`PAGE` long-press saves everything (and says so if there is no filesystem to
+save to). `Storage::begin()` mounts but never formats — formatting an 8 MB FAT
+partition takes far longer than a boot sequence should, so it is an explicit,
+on-screen action under SETTINGS instead. Flash erases stall the XIP cache, so core0
+parks the audio core in an SRAM-resident spin at a clean block boundary around
+every write — audio pauses briefly during a save rather than glitching mid-block.
+
+### USB DRIVE — drag-and-drop DX7 voice banks
+
+SETTINGS → **USB DRIVE** exports the whole FS partition to a computer as a
+plain USB memory stick (`FatFSUSB`, part of the arduino-pico core — see
+**Building**'s USB Stack requirement). Drop standard DX7 `.syx` cartridge
+dumps into `/banks` — 32-voice files, either the usual SysEx-wrapped 4104-byte
+export or a raw 4096-byte voice dump — eject on the computer, then press
+`PAGE`. The new banks appear on the DX7 engine's BANK row immediately after,
+right past the 8 factory ROM ones (`MAX_FS_BANKS` in `config.h`, 64 by
+default → up to 2048 extra voices). See **Yamaha DX7** under *Synth engines*
+for how they're addressed.
+
+Entering USB DRIVE is deliberate and exclusive, not automatic: it stops every
+track and silences the engine first, because once a computer has the drive
+mounted it can erase or program flash at any moment, and a flash write stalls
+instruction fetch for whichever core is running from it — the audio core.
+Nothing about the *filesystem itself* being mounted requires this, though: if
+a computer auto-mounts the drive incidentally (plugged in only for power or
+the serial monitor, which many OSes do without being asked), playback
+continues exactly as before — every filesystem access anywhere in this
+firmware already refuses to run while the host owns it, so nothing needs
+protecting beyond that. Only the deliberate, on-screen SETTINGS entry point
+stops the transport.
+
+---
+
+## MIDI
+
+- **OUT on GP1**, IN on GP0, 31250 baud, via PIO UART.
+- Note on/off, CC, program change (loads that engine's factory preset), pitch
+  bend, polyphonic + channel aftertouch, and 24-PPQN clock with
+  start/stop/continue, in and out.
+- Input channel filter (omni or 1–16), soft thru, a **Kbd Play** on/off
+  switch, and a PANIC entry on the MIDI page.
+- **An external MIDI keyboard on MIDI IN plays the internal synth engine
+  live** — "Local Control" in conventional synth terms — whatever engine is
+  currently selected, independent of the sequencer's transport or record-arm
+  state. **Kbd Play** (MIDI SET page, on by default) is the on/off switch for
+  this: turning it off silences that live monitoring without touching MIDI
+  thru or step-recording (SHIFT+PLAY still captures incoming notes into the
+  active track either way), and turning it off mid-note can never strand a
+  voice sounding, since it only gates a NEW note-on — the matching note-off
+  always goes through. Set **In Chan** to the keyboard's own transmit channel
+  (or leave it on OMNI, the default) if notes aren't reaching the synth.
+- **Every synth parameter has a CC**, resolved through the live engine's own
+  parameter table (`ParamInfo::cc`, `param_types.h`) — same source the UI
+  reads, so the map and the editor can never drift apart. Reserved
+  controllers (0/32 bank, 6/38 data entry, 64 sustain, 98–101 RPN/NRPN,
+  120–127 channel mode) are avoided; where the GM2 meaning matches, the
+  standard number is used.
+- CC 1 is the mod wheel; CC 64 is a real **sustain pedal**; CC 120/123 are
+  all-notes-off. All three are handled before the per-engine CC lookup, so
+  they always work regardless of which engine is live.
+- **Sustain (CC 64, ≥64 = down)** works the way a normal synth's does:
+  releasing a key while the pedal is held keeps that note ringing, and it
+  actually stops when the pedal itself comes back up — not per-engine DSP,
+  since that's a note-ROUTING behaviour, implemented once for whichever
+  engine is live rather than in all seventeen of them. A key pressed again
+  while the pedal is still down retriggers normally and re-takes ownership of
+  its own release from the pedal. PANIC and CC 120/123 (all-notes-off) both
+  clear any notes that were only still ringing because of the pedal, same as
+  everything else they silence.
+
+### CC map is per engine, not one global table
+
+Each engine defines its own parameters and CC numbers in its own source file
+(`cs80_params.cpp`, `minimoog.cpp`, `prophet5.cpp`, `prophet10.cpp`,
+`arp2600.cpp`, `odyssey.cpp`, `mellotron.cpp`, `oberheim.cpp`,
+`jupiter8.cpp`, `system100.cpp`, `moogmodular.cpp`, `obx.cpp`,
+`ppgwave.cpp`, `ms20.cpp`, `dx7.cpp`, `stringens.cpp`, `prophetvs.cpp`) —
+there is no longer one fixed CC table shared by every sound, since a
+Minimoog has a completely different panel from a CS-80.
+To find a given engine's exact CC numbers: switch to it, open a SYNTH page,
+and each parameter's row is exactly what CC drives it (or read that engine's
+own `PARAM_INFO[]` table in source). Every engine's last 8 parameters are
+the same arpeggiator tail (ENABLE, PATTERN, RATE, GATE, OCTAVES, DIR, LATCH,
+SYNC, in that order — see `ARP_TAIL_COUNT` in `engine.h`), so the arp CCs
+are the same shape on every engine even though their exact numbers can
+differ.
+
+---
+
+## Troubleshooting
+
+| Problem | Check |
+|---------|-------|
+| No display | SDA/SCL on GP4/GP5, address `0x3C`; confirm the U8g2 library is installed |
+| No audio | PCM5102 XSMT → 3V3, SCK → GND, BCK on GP15 (LRCK *must* be GP16) |
+| No MIDI out | 220R in series on GP1; confirm `MIDI_USE_PIO_UART` is 1 |
+| Clicks / dropouts | Check the PERF page — if CPU is pinned, lower `MAX_VOICES` in `config.h` |
+| Encoder skips steps or runs backwards | Retune `ENC_TICKS_PER_DETENT` in `config.h`, or swap ENC A/ENC B (GP6/GP7) |
+| Pots feel twitchy | Retune `POT_DEADBAND` in `config.h` |
+| Nothing saves | Tools → Flash Size must reserve an FS partition, then SETTINGS → FORMAT FS (hold SHIFT) |
+| Blank screen | CPU Speed → 150 MHz, Board → Generic RP2350, or hold SHIFT at power-up for safe boot |
+| Stuck on one boot stage | The stage named on screen is where it stopped — see "First flash" above |
+| Sequencer drifts against external gear | Turn Ext Sync on, or Clock Out on — not both |

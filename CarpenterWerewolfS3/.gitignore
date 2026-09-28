@@ -1,0 +1,10 @@
+# Host-side test artifacts (tests/run.sh, tests/syntax_check.sh)
+tests/test
+tests/.u8g2/
+tests/.dexed/
+
+# Design-canvas build artifacts (design/render/build.sh, design/carpenter-ui/build.mjs)
+design/render/build/
+design/render/out/
+design/carpenter-ui/carpenter-synth-ui.html
+design/carpenter-ui/heights.json
