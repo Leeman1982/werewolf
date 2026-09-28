@@ -1,6 +1,16 @@
 /*******************************************************************
  ZOMBIE SS PROPHET-8 SYNTHESIZER  v3
- Prophet-8 inspired band-limited wavetable synth for ESP32 CYD
+ Prophet-8 inspired band-limited wavetable synth
+ Ported to standard ESP32 WROOM + ILI9341 3.2" 14-pin touchscreen + PCM5102 DAC
+
+ Hardware (ESP32 WROOM):
+ - Display+Touch: ILI9341 3.2" 14-pin SPI module (shared SPI bus VSPI)
+     MOSI=23, MISO=19, SCLK=18
+     Display: CS=15, DC=2, RST=4, BL=21
+     Touch (XPT2046): CS=5, IRQ=36
+ - DAC: PCM5102 I2S — BCLK=22, LRCK=27, DIN=17
+ - MIDI: 5-pin DIN on GPIO 35 (input-only)
+ - Free for pots/buttons: ADC1 on GPIO 32,33,34,39; digital on 13,14,25,26
 
  v3 Features (on top of v2):
  - Band-limited wavetable oscillators (replaces polyBLEP)
@@ -23,7 +33,7 @@
  - Chord Pad: 8 chord types × 12 roots (bonus feature)
  - Note name display as notes are played
  - USB and 5-pin DIN MIDI input (GPIO 35)
- - PCM5052 DAC output (I2S) on GPIO 22/27/17
+ - PCM5102 DAC output (I2S) on GPIO 22/27/17
  *******************************************************************/
 
 #include <SPI.h>
@@ -49,15 +59,13 @@
 #include "zombie_presets_mode.h"
 #include "zombie_chord_pad.h"
 
-// ── Hardware pins ──────────────────────────────────────────────────────────
-#define XPT2046_IRQ  36
-#define XPT2046_MOSI 32
-#define XPT2046_MISO 39
-#define XPT2046_CLK  25
-#define XPT2046_CS   33
+// ── Touch pins (XPT2046 shares the display SPI bus — VSPI: 18/19/23) ──────
+#define XPT2046_IRQ  36   // T_IRQ  — input-only GPIO, perfect for interrupt
+#define XPT2046_CS    5   // T_CS   — touch chip select
+// MOSI=23, MISO=19, CLK=18 are defined in User_Setup.h for the display and
+// are shared with the touch controller on the same 14-pin module connector.
 
 // ── Global objects ─────────────────────────────────────────────────────────
-SPIClass mySpi = SPIClass(VSPI);
 XPT2046_Touchscreen ts(XPT2046_CS, XPT2046_IRQ);
 TFT_eSPI tft = TFT_eSPI();
 
@@ -262,16 +270,14 @@ void setup() {
   Serial.begin(115200);
   Serial.println("ZOMBIE SS v3 — initializing (BL wavetable oscillators)");
 
-  // Touch SPI
-  mySpi.begin(XPT2046_CLK, XPT2046_MISO, XPT2046_MOSI, XPT2046_CS);
-  ts.begin(mySpi);
-  ts.setRotation(1);
-
-  // Display
+  // Display — tft.init() also initialises the shared VSPI bus (MOSI=23, MISO=19, SCLK=18)
   tft.init();
   tft.setRotation(1);
-  tft.invertDisplay(true);   // Required for ESP32-2432S028R colour fix
   tft.fillScreen(THEME_BG);
+
+  // Touch — joins the same SPI bus already set up by tft.init()
+  ts.begin(SPI);
+  ts.setRotation(1);
 
   // Splash screen
   tft.setTextColor(THEME_PRIMARY, THEME_BG);
