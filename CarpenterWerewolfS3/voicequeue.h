@@ -7,8 +7,9 @@
 //
 //  Single producer (core0 allocates voices), single consumer (core1 applies
 //  them at a block boundary).  Power-of-two capacity so head and tail wrap by
-//  bit-mask instead of a modulo, and a __dmb() on each side so the payload is
-//  visible before the index that publishes it.
+//  bit-mask instead of a modulo, and a full memory fence on each side so the
+//  payload is visible before the index that publishes it (the xtro build's
+//  ARM __dmb(); on the S3's Xtensa cores this fence compiles to MEMW).
 //
 //  This lives in a header rather than the .ino because the Arduino build
 //  inserts generated prototypes directly after the includes — a function taking
@@ -36,7 +37,7 @@ inline bool vqPush(uint8_t cmd, uint8_t v, uint8_t note, uint8_t vel, float freq
     if (next == vqTail) return false;      // full — drop rather than block core0
     vq[h].cmd = cmd; vq[h].voice = v; vq[h].note = note;
     vq[h].vel = vel; vq[h].freq = freq; vq[h].trigEnv = trig;
-    __dmb();
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     vqHead = next;
     return true;
 }
@@ -45,7 +46,7 @@ inline bool vqPop(VMsg* out) {
     uint32_t t = vqTail;
     if (t == vqHead) return false;
     *out = vq[t];
-    __dmb();
+    __atomic_thread_fence(__ATOMIC_SEQ_CST);
     vqTail = (t + 1) & VQ_MASK;
     return true;
 }

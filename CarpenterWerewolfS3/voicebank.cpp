@@ -1,8 +1,8 @@
 #include "voicebank.h"
-#include <FatFS.h>
+#include <FFat.h>
 #include <string.h>
 
-// The USB drive and the Pico cannot both own the filesystem; the sketch sets
+// The USB drive and the synth cannot both own the filesystem; the sketch sets
 // this (see CarpenterSynth.ino) while the PC has the drive mounted. Every
 // function here refuses to touch FatFS while it's set, matching every
 // function in storage.cpp.
@@ -35,26 +35,32 @@ void vbRescan() {
     _fsCount = 0;
     if (g_diskMode) return;              // PC owns the filesystem right now
 
-    Dir dir = FatFS.openDir(BANK_DIR);
-    while (_fsCount < MAX_FS_BANKS && dir.next()) {
-        if (dir.isDirectory()) continue;
-        String fn = dir.fileName();
-        if (!endsWithSyx(fn.c_str())) continue;
+    File dir = FFat.open(BANK_DIR);
+    if (!dir || !dir.isDirectory()) return;
+    for (File f = dir.openNextFile(); f && _fsCount < MAX_FS_BANKS; f = dir.openNextFile()) {
+        if (f.isDirectory()) continue;
+        // name() is the bare file name on arduino-esp32 3.x; strip any path
+        // an older core might still hand back.
+        const char* fn = f.name();
+        const char* slash = strrchr(fn, '/');
+        if (slash) fn = slash + 1;
+        if (!endsWithSyx(fn)) continue;
 
-        size_t sz = dir.fileSize();
+        size_t sz = f.size();
         uint16_t off;
         if      (sz >= (size_t)DX7_PACKED_VOICE * DX7_VOICES_PER_BANK + 8) off = 6;  // SysEx-wrapped
         else if (sz >= (size_t)DX7_PACKED_VOICE * DX7_VOICES_PER_BANK)     off = 0;  // raw voice data
         else continue;                                                     // too small to be a bank
 
         FsBank& b = _fs[_fsCount];
-        snprintf(b.file, sizeof(b.file), "%s/%s", BANK_DIR, fn.c_str());
+        snprintf(b.file, sizeof(b.file), "%s/%s", BANK_DIR, fn);
         b.offset = off;
 
         // Display name: filename minus the .syx extension.
-        size_t n = fn.length() >= 4 ? fn.length() - 4 : fn.length();
+        size_t len = strlen(fn);
+        size_t n = len >= 4 ? len - 4 : len;
         if (n >= sizeof(b.name)) n = sizeof(b.name) - 1;
-        memcpy(b.name, fn.c_str(), n);
+        memcpy(b.name, fn, n);
         b.name[n] = '\0';
 
         _fsCount++;
@@ -74,7 +80,7 @@ bool vbGetVoice(uint8_t bank, uint8_t prog, uint8_t out[DX7_PACKED_VOICE]) {
     if (!out || bank >= _fsCount || prog >= DX7_VOICES_PER_BANK) return false;
     if (g_diskMode) return false;        // filesystem belongs to the PC
 
-    File f = FatFS.open(_fs[bank].file, "r");
+    File f = FFat.open(_fs[bank].file, "r");
     if (!f) return false;
     bool ok = f.seek(_fs[bank].offset + (uint32_t)prog * DX7_PACKED_VOICE, SeekSet) &&
               f.read(out, DX7_PACKED_VOICE) == DX7_PACKED_VOICE;

@@ -1,7 +1,15 @@
 #ifndef _ARM_MATH_H
 #define _ARM_MATH_H
 
+// Werewolf S3: pico/float.h exists only on the RP2350 core; everywhere else
+// the plain C headers supply the same types and libm.
+#if __has_include(<pico/float.h>)
 #include <pico/float.h>
+#else
+#include <stdint.h>
+#include <stddef.h>
+#include <math.h>
+#endif
 
 #ifdef   __cplusplus
 extern "C"

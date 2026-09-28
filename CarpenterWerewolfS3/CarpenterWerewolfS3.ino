@@ -1,50 +1,44 @@
 /*
- * Carpenter Synth — RP2350 multi-engine workstation, "Synthesize the Season" edition
+ * Carpenter Synth — WEREWOLF S3 edition
  * ───────────────────────────────────────────────────────────────────────────
- *  A Halloween/John-Carpenter-scored reskin of UltimateSynthNYR, with its
- *  original single-engine voice replaced by the multi-engine architecture
- *  (17 engines live, CS-80 through Prophet-VS — see engine.h and README.md's
- *  Synth engines section for the full roster) ported from this project's
- *  own ESP32-S3 branch, and then back onto the main xtro board's own
- *  hardware: 128x64 SSD1309 OLED, rotary encoder, five panel buttons, two
- *  performance switches and two pots. Same sequencer (4 tracks, time
- *  signatures, chains, 200 riffs, songs), same audio and DSP to the byte —
- *  only the display, the control surface and the branding changed in that
- *  port. See README.md.
+ *  The xtro Carpenter Synth (17 engines live, CS-80 through Prophet-VS -- see
+ *  engine.h and README.md's Synth engines section -- plus its 4-track step
+ *  sequencer, chains, 200 riffs and songs) moved onto the werewolf's
+ *  hardware: an ESP32-S3 with 16 MB flash, a 3.2" ILI9341 320x240 touch
+ *  screen and a PCM5102A DAC. The sound side is the xtro build's to the
+ *  byte; the hardware layer and the panel UI are new. See README.md.
  *
- *  Target    : Raspberry Pi Pico 2 / RP2350, 16 MB flash
- *  Toolchain : Arduino IDE + "Raspberry Pi Pico/RP2040/RP2350" core
- *              (Earle Philhower, arduino-pico) — board "Raspberry Pi Pico 2".
- *  Libraries : U8g2, and Synth_Dexed (the DX7 engine — a ready-to-install
- *              copy is vendored at extras/Synth_Dexed/; see README.md).
- *              Everything else — I2S, SerialPIO, FatFS — ships with the
- *              core. No MIDI library, no AudioTools.
+ *  Target    : ESP32-S3 (DevKitC-1 style), 16 MB flash, PSRAM optional
+ *  Toolchain : Arduino IDE + Espressif "esp32" core 3.x -- board
+ *              "ESP32S3 Dev Module".
+ *  Libraries : U8g2 (Library Manager), and Synth_Dexed (the DX7 engine -- a
+ *              ready-to-install copy is vendored at extras/Synth_Dexed/).
+ *              Display, touch, I2S, MIDI, FAT and USB drive use only what
+ *              ships with the core.
  *  Licence   : GPLv3 as a whole — Synth_Dexed is GPLv3 over Apache-2.0.
- *              See README.md's Licensing section.
  *
- *  Hardware — exact CS-80 / New York Ripper board: same pinout, same 128x64
- *  SSD1309 OLED, same encoder-and-five-button panel, same two performance
- *  switches and two performance pots. See config.h for the full pinout:
- *    Audio  : PCM5102 I2S   BCK=GP15  LRCK=GP16  DIN=GP17
- *    Display: SSD1309 128x64 OLED, hardware I2C  SDA=GP4  SCL=GP5
- *    Encoder: A=GP6 B=GP7 SW=GP8
- *    Buttons: PLAY=GP9 SHIFT=GP10 PAGE=GP11 TRACK=GP12 MUTE=GP13
- *    Perf sw: OCT DOWN=GP2  OCT UP=GP3
- *    Perf pot: CUTOFF=GP26 (ADC0)  RESONANCE=GP27 (ADC1)
- *    Click  : GP14 (metronome gate out)
- *    MIDI   : OUT = GP1, IN = GP0  (PIO UART — see config.h)
+ *  Hardware (config.h has the full pinout):
+ *    TFT    : ILI9341  SCK=12 MOSI=11 MISO=13 CS=10 DC=9 RST=14 BL=21
+ *    Touch  : XPT2046  CLK=15 DIN=16 DO=47 CS=8 (IRQ=3, unused)
+ *    Audio  : PCM5102A BCK=5 LRCK=4 DIN=6
+ *    MIDI   : IN=18 OUT=17 (UART1)
+ *    Optional panel: encoder 39/40/41, PLAY 42, SHIFT 38, PAGE 7, TRACK 2,
+ *                    MUTE 1, OCT DOWN 0 (BOOT button), OCT UP 46, click 43
  *
  *  Board settings (Tools):
- *    CPU Speed  : 250 MHz
- *    Flash Size : a layout that reserves an FS partition, e.g. 8 MB / 8 MB FS
- *    USB Stack  : "Pico SDK" — required for SETTINGS -> USB DRIVE (FatFSUSB
- *                 registers through the core's own pluggable-USB layer; the
- *                 Adafruit TinyUSB stack is a hard #error against it)
+ *    Board            : ESP32S3 Dev Module
+ *    Flash Size       : 16MB (128Mb)
+ *    Partition Scheme : 16M Flash (3MB APP/9.9MB FATFS)
+ *    CPU Frequency    : 240MHz (WiFi)
+ *    PSRAM            : whatever the module has (not required)
+ *    USB Mode         : USB-OTG (TinyUSB)  -- needed for SETTINGS -> USB DRIVE
+ *    USB CDC On Boot  : Enabled            -- Serial on the same USB port
  *
  *  Architecture:
- *    core0 — sequencer timing, UI, controls, MIDI in/out, storage, arpeggiator
- *    core1 — audio only: whichever engine is live renders + applies its own
- *            FX chain -> I2S (see engine.h — exactly one engine at a time)
+ *    core 1 (Arduino loop) — sequencer timing, UI, touch, controls, MIDI,
+ *                            storage, arpeggiator
+ *    core 0 (audio task)   — audio only: whichever engine is live renders +
+ *                            applies its own FX chain -> I2S
  */
 
 #include "config.h"
@@ -63,9 +57,24 @@
 #include "voicequeue.h"
 #include "scales.h"
 
-#include <I2S.h>
-#include <FatFS.h>
-#include <FatFSUSB.h>
+#include "panel.h"
+#include <FFat.h>
+#include <driver/i2s_std.h>
+#include <esp_timer.h>
+#include <esp_random.h>
+
+// SETTINGS -> USB DRIVE needs the TinyUSB stack (Tools -> USB Mode ->
+// USB-OTG). Under "Hardware CDC and JTAG" everything else still works and the
+// menu row says so instead.
+#if defined(ARDUINO_USB_MODE) && (ARDUINO_USB_MODE == 0)
+  #define WOLF_USB_DRIVE 1
+  #include "USB.h"
+  #include "USBMSC.h"
+  #include <wear_levelling.h>
+  #include <esp_partition.h>
+#else
+  #define WOLF_USB_DRIVE 0
+#endif
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  Globals
@@ -85,93 +94,113 @@ volatile float g_cpuLoad = 0.0f;
 volatile int   g_activeVoices = 0;
 volatile float g_peakL = 0.0f, g_peakR = 0.0f;
 
-// Live polyphony ceiling.  Lowered automatically if core1 starts running out of
+// Live polyphony ceiling.  Lowered automatically if the audio task starts running out of
 // time, raised again when it recovers — an overloaded render is a stream of
 // clicks, and dropping the oldest voice is far less offensive than that.
 static volatile uint8_t g_voiceLimit = MAX_VOICES;
 
-I2S i2s(OUTPUT);
+static i2s_chan_handle_t s_i2sTx = nullptr;
 static volatile bool g_audioReady = false;
+volatile uint32_t g_xruns = 0;
+bool g_bigAllocFailed = false;     // bigmem.h: a PSRAM buffer could not be had
 
-// ── Flash-write safety (RP2350 XIP) ────────────────────────────────────────
-// Erasing flash stalls XIP, so core1 must not be fetching instructions from
-// flash while core0 writes the filesystem.  arduino-pico's flash backend does
-// call idleOtherCore() itself, so this handshake is not what keeps the chip
-// alive — it is what makes core1 stop at a clean block boundary of its own
-// accord, instead of being frozen mid-render and resuming into a half-filled
-// I2S buffer.  The 50 ms bail-out is safe for exactly that reason.
+// ── Flash-write safety ─────────────────────────────────────────────────────
+// Erasing or writing flash disables the ESP32-S3's cache on BOTH cores, so
+// the audio task is stalled for the duration no matter what; the I2S DMA keeps
+// playing out what is already queued (I2S_BUFFERS of it) and then silence.
+// This handshake makes the audio task stop at a clean block boundary of its
+// own accord first, rather than being frozen mid-render. The 50 ms bail-out
+// is safe for exactly that reason.
 static volatile bool g_flashPause = false;
 static volatile bool g_audioParked = false;
 
-static void __no_inline_not_in_flash_func(audioParkSpin)() {
-    g_audioParked = true;
-    while (g_flashPause) { tight_loop_contents(); }
-    g_audioParked = false;
-}
 void audioFlashBegin() {
     if (!g_audioReady) return;
     g_flashPause = true;
     unsigned long t0 = millis();
-    while (!g_audioParked && (millis() - t0) < 50) { tight_loop_contents(); }
+    while (!g_audioParked && (millis() - t0) < 50) { delay(1); }
 }
 void audioFlashEnd() { g_flashPause = false; }
 
 // ── USB mass storage (drag-and-drop DX7 voice banks) ────────────────────────
-// FatFSUSB exports the FS partition to a PC as a memory stick. FAT allows only
-// ONE writer, so while the host has it mounted this box must not touch the
-// filesystem at all -- not even reads, since the host's own housekeeping
-// writes would corrupt it. g_diskMode (storage.h) is that gate: storage.cpp
-// and voicebank.cpp both refuse every FatFS access while it's set. The
-// sequencer keeps running regardless -- nothing about the host owning the
-// flash requires the music to stop.
+// SETTINGS -> USB DRIVE hands the FAT partition to the computer as a memory
+// stick. FAT allows only ONE writer, so while the host has it this box must
+// not touch the filesystem at all -- not even reads. g_diskMode (storage.h)
+// is that gate: storage.cpp and voicebank.cpp refuse every FFat access while
+// it's set. The sequencer keeps running regardless.
 //
-// Not exported at boot: SETTINGS -> USB DRIVE (ui.cpp) is what calls
-// uiUsbBegin() below, a deliberate, on-screen action, because once the host
-// has it mounted it may erase/program flash at any moment, and a flash write
-// stalls XIP for whichever core is executing from it -- the audio core.
-// Keeping MSC off during normal play removes that race entirely rather than
-// hoping it never lands mid-render.
+// FFat keeps its wear-levelling handle private, so the drive is served by
+// unmounting FFat and mounting the same partition's wear-levelling layer
+// directly (the IDF's public wl_* API): the host then sees exactly the
+// sectors FFat reads and writes, and FFat mounts them again on eject.
 static volatile bool g_dx7BanksDirty = false;   // set on eject: /banks needs rescanning
-// Mount/unmount deferred to loop() -- see the two callbacks just below.
-static volatile bool g_fsUnmountReq = false;
-static volatile bool g_fsRemountReq = false;
+static volatile bool g_fsRemountReq = false;    // host ejected: loop() takes the FS back
 
-// These run in USB *interrupt* context, so they may do nothing but set flags.
-// Calling FatFS.end()/begin() from here was the real hazard being guarded
-// against: unmounting frees the FTL and flushes metadata (a flash erase,
-// which idles the other core) while core0's own main loop could be
-// part-way through a FatFS call of its own -- and the host issues the SCSI
-// command that triggers this automatically, without anyone here asking for
-// it. loop() picks the flags up instead, exactly like a save.
-static void usbPlug(uint32_t) {
-    g_diskMode     = true;            // stop every FS access at once
-    g_fsUnmountReq = true;
-}
-static void usbUnplug(uint32_t) {
-    g_fsRemountReq = true;            // loop() remounts, then clears g_diskMode
-}
-// The host may only mount while core0 isn't mid-flash-write -- reuses the
-// same g_flashPause a save/format already sets, rather than a second flag
-// tracking the identical window.
-static bool usbDriveReady(uint32_t) { return !g_flashPause; }
+#if WOLF_USB_DRIVE
+static USBMSC       s_msc;
+static wl_handle_t  s_wl = WL_INVALID_HANDLE;
+static uint32_t     s_wlSector = 4096;
+// The host writes whole 4 KB blocks, but TinyUSB may deliver one in pieces;
+// they are gathered here so each flash sector is erased and written once.
+static uint8_t      s_secBuf[4096];
 
-// Enter/leave USB drive mode -- thin wrappers around FatFSUSB itself. The
-// transport-stop/silence/screen-push side lives in ui.cpp, which composes
-// these with its own uiStopAll()/uiPanic() the same way it already composes
-// other multi-step panel actions.
+static int32_t mscRead(uint32_t lba, uint32_t offset, void* buf, uint32_t n) {
+    if (s_wl == WL_INVALID_HANDLE) return -1;
+    return wl_read(s_wl, (size_t)lba * s_wlSector + offset, buf, n) == ESP_OK ? (int32_t)n : -1;
+}
+static int32_t mscWrite(uint32_t lba, uint32_t offset, uint8_t* buf, uint32_t n) {
+    if (s_wl == WL_INVALID_HANDLE || offset + n > s_wlSector) return -1;
+    memcpy(s_secBuf + offset, buf, n);
+    if (offset + n < s_wlSector) return (int32_t)n;      // more of this block to come
+    size_t addr = (size_t)lba * s_wlSector;
+    if (wl_erase_range(s_wl, addr, s_wlSector) != ESP_OK) return -1;
+    return wl_write(s_wl, addr, s_secBuf, s_wlSector) == ESP_OK ? (int32_t)n : -1;
+}
+// Runs in the TinyUSB task: only sets a flag, loop() does the remount.
+static bool mscStartStop(uint8_t power, bool start, bool loadEject) {
+    (void)power;
+    if (loadEject && !start) g_fsRemountReq = true;
+    return true;
+}
+
+static void usbDriveRelease() {
+    s_msc.mediaPresent(false);
+    if (s_wl != WL_INVALID_HANDLE) { wl_unmount(s_wl); s_wl = WL_INVALID_HANDLE; }
+    audioFlashBegin();
+    FFat.begin(false);
+    audioFlashEnd();
+    g_diskMode = false;
+    g_dx7BanksDirty = true;       // rescan /banks now that it is ours again
+}
+#endif
+
+bool uiUsbAvailable() { return WOLF_USB_DRIVE != 0; }
+
+// Enter/leave USB drive mode. The transport-stop/silence/screen-push side
+// lives in ui.cpp, which composes these with its own uiStopAll()/uiPanic().
 void uiUsbBegin() {
-    FatFSUSB.begin();
-    delay(100);            // TinyUSB settle after re-enumerating (per core example)
+#if WOLF_USB_DRIVE
+    g_diskMode = true;                  // stop every FS access first
+    audioFlashBegin();
+    FFat.end();
+    audioFlashEnd();
+    const esp_partition_t* part = esp_partition_find_first(
+        ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_FAT, "ffat");
+    if (!part || wl_mount(part, &s_wl) != ESP_OK) {
+        s_wl = WL_INVALID_HANDLE;
+        usbDriveRelease();
+        ui.toast("USB DRIVE FAILED");
+        return;
+    }
+    s_wlSector = (uint32_t)wl_sector_size(s_wl);
+    s_msc.begin((uint32_t)(wl_size(s_wl) / s_wlSector), (uint16_t)s_wlSector);
+    s_msc.mediaPresent(true);
+#endif
 }
 void uiUsbEnd() {
-    FatFSUSB.end();
-    if (g_diskMode) {
-        // The host still had it mounted, so the filesystem is currently
-        // unmounted on our side -- ask loop() to take it back.
-        g_fsRemountReq = true;
-    } else {
-        g_dx7BanksDirty = true;   // rescan /banks on the next loop() pass
-    }
+#if WOLF_USB_DRIVE
+    if (g_diskMode) usbDriveRelease();
+#endif
 }
 
 // ui.cpp is deliberately engine-agnostic (it only ever calls the generic
@@ -182,28 +211,28 @@ void uiUsbEnd() {
 void uiBanksMayHaveChanged() { g_dx7BanksDirty = true; }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Voice command queue (core0 -> core1) — see voicequeue.h
+//  Voice command queue (loop -> audio task) — see voicequeue.h
 // ═══════════════════════════════════════════════════════════════════════════
 VMsg vq[VQ_SIZE];
 volatile uint32_t vqHead = 0, vqTail = 0;
 
-// Core0-owned voice bookkeeping — engine-agnostic (see voicealloc.h): every
+// Loop-owned voice bookkeeping — engine-agnostic (see voicealloc.h): every
 // engine module externs this same instance to publish per-voice busy state.
 VoiceAlloc va;
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Modulation state shared with core1
+//  Modulation state shared with the audio task
 // ═══════════════════════════════════════════════════════════════════════════
 static volatile float g_pitchBend = 0.0f;    // -1..1
 static volatile float g_modWheel  = 0.0f;
 static volatile float g_chanAftertouch = 0.0f;
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CORE 1 — audio
+//  AUDIO TASK (core 0)
 // ═══════════════════════════════════════════════════════════════════════════
 static int16_t audioBuf[AUDIO_BLOCK * 2];
 
-// Drains the core0->core1 note queue into whichever engine is currently
+// Drains the loop->audio note queue into whichever engine is currently
 // live. Bounded so a burst can't starve the render — matches the queue-drain
 // shape every engine already assumes (see engine.h's note-control comments).
 static inline void drainVoiceQueue() {
@@ -215,12 +244,7 @@ static inline void drainVoiceQueue() {
     }
 }
 
-// __no_inline_ matters as much as _not_in_flash_: with a plain
-// __not_in_flash_func the compiler inlines this whole function into loop1(),
-// which is NOT marked, and the copy that actually executes ends up back in
-// flash — silently undoing the placement.  Verified with nm on the ELF: the
-// symbol must live at 0x2xxxxxxx, not 0x10xxxxxx.
-static void __no_inline_not_in_flash_func(renderBlock)() {
+static void renderBlock() {
     drainVoiceQueue();
 
     // The whole render — oscillators, filters, envelopes, the engine's own
@@ -241,59 +265,82 @@ static void __no_inline_not_in_flash_func(renderBlock)() {
     g_activeVoices = active;
 }
 
-void setup1() {
-    while (!g_audioReady) { tight_loop_contents(); }
-    i2s.setBCLK(PIN_I2S_BCLK);        // LRCK is BCLK+1 = GP16 on arduino-pico
-    i2s.setDATA(PIN_I2S_DOUT);
-    i2s.setBitsPerSample(16);
-    i2s.setFrequency(SAMPLE_RATE);
+static void i2sStart() {
+    i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     // Depth, not block size: AUDIO_BLOCK stays 64 samples (1.33 ms) so note-on
-    // is tight, while I2S_BUFFERS of them gives core1 a cushion to ride out
-    // anything that momentarily steals its time.
-    i2s.setBuffers(I2S_BUFFERS, AUDIO_BLOCK);
-    i2s.begin();
+    // is tight, while I2S_BUFFERS of them give the audio task a cushion to
+    // ride out anything that momentarily steals its time.
+    cc.dma_desc_num  = I2S_BUFFERS;
+    cc.dma_frame_num = AUDIO_BLOCK;
+    cc.auto_clear    = true;          // an underrun plays silence, not a loop
+    i2s_new_channel(&cc, &s_i2sTx, nullptr);
+
+    i2s_std_config_t sc = {
+        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,             // PCM5102A: SCK tied to GND
+            .bclk = (gpio_num_t)PIN_I2S_BCLK,
+            .ws   = (gpio_num_t)PIN_I2S_LRCK,
+            .dout = (gpio_num_t)PIN_I2S_DOUT,
+            .din  = I2S_GPIO_UNUSED,
+            .invert_flags = { false, false, false },
+        },
+    };
+    i2s_channel_init_std_mode(s_i2sTx, &sc);
+    i2s_channel_enable(s_i2sTx);
 }
 
-void loop1() {
-    if (g_flashPause) audioParkSpin();
-
-    uint32_t t0 = micros();
-    renderBlock();
-    uint32_t dt = micros() - t0;
-
-    // One block is AUDIO_BLOCK/SAMPLE_RATE seconds of audio; the fraction of
-    // that spent rendering is the CPU load.  Smoothed so the meter is readable.
+static void audioTask(void*) {
+    while (!g_audioReady) vTaskDelay(1);
+    i2sStart();
     const float blockUs = (float)AUDIO_BLOCK * 1000000.0f / SAMPLE_RATE_F;
-    float load = (float)dt / blockUs;
-    g_cpuLoad += (load - g_cpuLoad) * 0.05f;
 
-    // Overload guard: shed a voice before the buffer underruns, take it back
-    // when there is room again.  Clicks are worse than a stolen voice.
-    // Notes already sounding always run to completion — lowering the ceiling
-    // force-releases exactly the one voice at the new boundary, not anything
-    // below it.
-    static uint16_t hot = 0, cool = 0;
-    uint8_t maxV = engineNumVoices();
-    if (g_cpuLoad > 0.90f) {
-        if (++hot > 40 && g_voiceLimit > 1) {
-            g_voiceLimit--;
-            engineNoteOff(g_voiceLimit, -1);   // forced by the CPU guard, not a real key release
-            hot = 0;
+    for (;;) {
+        if (g_flashPause) {
+            g_audioParked = true;
+            while (g_flashPause) vTaskDelay(1);
+            g_audioParked = false;
         }
-        cool = 0;
-    } else if (g_cpuLoad < 0.65f) {
-        hot = 0;
-        if (++cool > 400 && g_voiceLimit < maxV) { g_voiceLimit++; cool = 0; }
-    }
 
-    for (int n = 0; n < AUDIO_BLOCK; n++) {
-        i2s.write(audioBuf[n * 2]);
-        i2s.write(audioBuf[n * 2 + 1]);
+        int64_t t0 = esp_timer_get_time();
+        renderBlock();
+        float dt = (float)(esp_timer_get_time() - t0);
+
+        // One block is AUDIO_BLOCK/SAMPLE_RATE seconds of audio; the fraction
+        // of that spent rendering is the CPU load.  Smoothed so the meter is
+        // readable. A block that took longer than real time is an xrun.
+        float load = dt / blockUs;
+        if (load > 1.0f) g_xruns = g_xruns + 1;
+        g_cpuLoad += (load - g_cpuLoad) * 0.05f;
+
+        // Overload guard: shed a voice before the buffer underruns, take it
+        // back when there is room again.  Clicks are worse than a stolen
+        // voice. Notes already sounding always run to completion — lowering
+        // the ceiling force-releases exactly the one voice at the new
+        // boundary, not anything below it.
+        static uint16_t hot = 0, cool = 0;
+        uint8_t maxV = engineNumVoices();
+        if (g_cpuLoad > 0.90f) {
+            if (++hot > 40 && g_voiceLimit > 1) {
+                g_voiceLimit = (uint8_t)(g_voiceLimit - 1);
+                engineNoteOff(g_voiceLimit, -1);   // forced by the CPU guard, not a real key release
+                hot = 0;
+            }
+            cool = 0;
+        } else if (g_cpuLoad < 0.65f) {
+            hot = 0;
+            if (++cool > 400 && g_voiceLimit < maxV) { g_voiceLimit = (uint8_t)(g_voiceLimit + 1); cool = 0; }
+        }
+
+        // Blocks until the DMA ring has room: this is what paces the task.
+        size_t written = 0;
+        i2s_channel_write(s_i2sTx, audioBuf, sizeof(audioBuf), &written, portMAX_DELAY);
     }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  CORE 0 — voice allocation
+//  LOOP — voice allocation
 // ═══════════════════════════════════════════════════════════════════════════
 // Mono/duo/poly all fall out of `va.limit` (== engineNumVoices()) rather than
 // a separate PLAY_MODE switch: a 1-voice engine (Minimoog) always steals its
@@ -319,7 +366,7 @@ static void synthAllOff() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  Arpeggiator (core0)
+//  Arpeggiator (loop)
 // ═══════════════════════════════════════════════════════════════════════════
 #define ARP_MAX_NOTES 16
 static int  arpBuf[ARP_MAX_NOTES];
@@ -477,7 +524,7 @@ void seqEmitContinue() { midi.continueMsg(); }
 // ═══════════════════════════════════════════════════════════════════════════
 //  MIDI in
 // ═══════════════════════════════════════════════════════════════════════════
-// OCT DOWN/UP (GP2/GP3) transpose incoming MIDI performance notes only — the
+// OCT DOWN/UP (config.h) transpose incoming MIDI performance notes only — the
 // sequencer's own patterns are left alone. g_noteOctShift records the shift
 // that was ACTUALLY applied at note-on, per raw incoming note number, so a
 // note-off is released at the same transposed pitch even if the octave
@@ -485,6 +532,13 @@ void seqEmitContinue() { midi.continueMsg(); }
 // would either leave a stuck note or release the wrong one.
 static int8_t g_octaveShift = 0;
 static int8_t g_noteOctShift[128] = {0};
+
+// The same transpose from the MIDI page's KBD OCTAVE row (a touch-only
+// werewolf has no OCT buttons). delta 0 just reads it.
+int uiKbdOctave(int delta) {
+    g_octaveShift = (int8_t)constrain((int)g_octaveShift + delta, -3, 3);
+    return g_octaveShift;
+}
 
 // Sustain pedal (CC 64). Not engine DSP -- a real synth's sustain is "the
 // note keeps ringing after key-up until the pedal itself comes up", which is
@@ -757,7 +811,7 @@ static void initDemoPattern(Sequencer& s, uint8_t track) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  setup / loop (core 0)
+//  setup / loop (Arduino loop task, core 1)
 // ═══════════════════════════════════════════════════════════════════════════
 void setup() {
     // ── 1. DISPLAY FIRST ───────────────────────────────────────────────────
@@ -775,15 +829,42 @@ void setup() {
 
     Serial.begin(115200);
 
-    randomSeed(rp2040.hwrand32());
-    pinMode(PIN_CLICK_OUT, OUTPUT);
-    digitalWrite(PIN_CLICK_OUT, LOW);
+    // The audio task owns core 0 and blocks on the I2S ring; when an engine
+    // is pushed past 100% the idle task there starves, and the task
+    // watchdog's only possible action would be to reset the synth mid-song.
+    // Same policy as the xtro build: no watchdog, the CPU guard sheds voices.
+    disableCore0WDT();
 
-    // Holding SHIFT at power-up skips the filesystem entirely and boots on
-    // the built-in defaults — the way back in if a bad save ever wedges the box.
-    pinMode(PIN_BTN_SHIFT, INPUT_PULLUP);
-    delay(2);
-    const bool safeBoot = (digitalRead(PIN_BTN_SHIFT) == LOW);
+    randomSeed(esp_random());
+    if (PIN_CLICK_OUT >= 0) {
+        pinMode(PIN_CLICK_OUT, OUTPUT);
+        digitalWrite(PIN_CLICK_OUT, LOW);
+    }
+
+    // Safe boot skips the filesystem entirely and boots on the built-in
+    // defaults — the way back in if a bad save ever wedges the box. Two ways
+    // in: hold SHIFT (if fitted) at power-up, or hold a finger on the screen
+    // and let go on SAFE BOOT (ui.h's bootHoldMenu() -- chosen by how long
+    // you hold, so it works even with the touch calibration way off).
+    bool safeBoot = false;
+    if (PIN_BTN_SHIFT >= 0) {
+        pinMode(PIN_BTN_SHIFT, INPUT_PULLUP);
+        delay(2);
+        safeBoot = (digitalRead(PIN_BTN_SHIFT) == LOW);
+    }
+    bool haveCal = touchCalLoad();
+    {
+        uint16_t rx, ry;
+        if (touchRaw(rx, ry)) {
+            UI::BootChoice c = ui.bootHoldMenu();
+            if (c == UI::BOOT_SAFE) safeBoot = true;
+            if (c == UI::BOOT_TOUCH_CAL) haveCal = false;
+        }
+    }
+    // First power-up (nothing in NVS) or asked for: calibrate before anything
+    // else can need a touch.
+    if (!haveCal) ui.runTouchCalibration();
+    ui.bootStatus("BOOTING");
 
     // ── 2. Engine ──────────────────────────────────────────────────────────
     ui.bootStatus("DSP TABLES");
@@ -794,6 +875,14 @@ void setup() {
     g_fxChorus.begin();
     g_fxDelay.begin();
     g_fxReverb.begin();
+    // The delay and reverb lines come from PSRAM (bigmem.h). A module
+    // without it cannot run this firmware; say so rather than crash later.
+    if (g_bigAllocFailed) {
+        Serial.printf("[Carpenter Synth] PSRAM buffers unavailable (PSRAM %u KB) - "
+                      "needs an N16R8 module and Tools -> PSRAM: OPI PSRAM\n",
+                      (unsigned)(ESP.getPsramSize() / 1024));
+        for (;;) { ui.bootStatus("NO PSRAM - SEE README"); delay(1000); }
+    }
 
     // ── 3. Storage ─────────────────────────────────────────────────────────
     // Mount only; see Storage::begin().  A missing or unformatted filesystem
@@ -803,7 +892,7 @@ void setup() {
     if (!safeBoot) {
         fsOk = storage.begin();
         if (!fsOk) {
-            Serial.println("[WARN] no filesystem - Tools > Flash Size must reserve one");
+            Serial.println("[WARN] no filesystem - Tools > Partition Scheme must have a FATFS partition");
             ui.bootStatus("NO FS - RAM ONLY");
             delay(1200);
         }
@@ -856,7 +945,7 @@ void setup() {
         seqs[t].setMuted(gs.trackMute[t] != 0);
     }
 
-    ui.bootStatus("MIDI GP1");
+    ui.bootStatus("MIDI");
     midi.begin();
     midi.setInChannel(gs.midiInChannel);
     midi.setOutEnabled(gs.midiOutEnable != 0);
@@ -872,42 +961,51 @@ void setup() {
 
     controls.begin();
     ui.bind(seqs, &activeTrack, &storage, &gs);
+    // A settings file that predates the panel look fields reads back as
+    // zero; the struct defaults cover the no-settings case.
     ui.applyContrast(gs.contrast);
+    ui.applyLook(gs.phosphor, gs.crtLines != 0);
 
-    // Export the filesystem as a USB stick (SETTINGS -> USB DRIVE) -- drop
-    // DX7 .syx cartridges into /banks and they show up on the BANK row after
-    // ejecting. Only worth registering if the filesystem actually mounted:
-    // FatFSUSB reports the drive's capacity straight from the FS, so with no
-    // FS partition reserved (Tools -> Flash Size) it would advertise a
-    // 0-byte disk, which hosts silently ignore. Not exported yet -- callbacks
-    // are registered up front so entering USB DRIVE is just a begin(); see
-    // uiUsbBegin()/uiUsbEnd() above and ui.cpp's SETTINGS handling.
-    if (fsOk) {
-        FatFSUSB.onPlug(usbPlug);
-        FatFSUSB.onUnplug(usbUnplug);
-        FatFSUSB.driveReady(usbDriveReady);
-    } else {
+#if WOLF_USB_DRIVE
+    // SETTINGS -> USB DRIVE. The MSC interface has to exist before the USB
+    // stack enumerates, so it is registered now, with no medium in it; the
+    // drive only "has a disk inserted" while USB DRIVE is open (uiUsbBegin).
+    s_msc.vendorID("ZOMBI SS");
+    s_msc.productID("CARPENTER SYNTH");
+    s_msc.productRevision("1.0");
+    s_msc.onRead(mscRead);
+    s_msc.onWrite(mscWrite);
+    s_msc.onStartStop(mscStartStop);
+    s_msc.mediaPresent(false);
+    USB.begin();
+#endif
+    if (!fsOk) {
         Serial.println("[Carpenter Synth] no filesystem - USB DRIVE unavailable. "
-                       "Pick a Flash Size with an FS partition in Tools.");
+                       "Pick a Partition Scheme with a FATFS partition in Tools.");
     }
 
-    // ── 4. Release the audio core ──────────────────────────────────────────
-    // Everything core1 touches now exists, so setup1() can stop spinning.
+    // ── 4. Start the audio task ────────────────────────────────────────────
+    // Everything it touches now exists. Pinned to core 0, which nothing else
+    // uses with the radios off; loop() stays on core 1.
     ui.bootStatus("AUDIO");
+    xTaskCreatePinnedToCore(audioTask, "audio", AUDIO_TASK_STACK, nullptr,
+                            AUDIO_TASK_PRIO, nullptr, AUDIO_CORE);
     g_audioReady = true;
 
     ui.bootStatus(fsOk ? "READY" : "READY (NO FS)");
     delay(900);                 // let the splash sit for a beat before the UI takes over
     ui.markDirty();
-    Serial.printf("[Carpenter Synth] ready - engine %s, %d presets, %d riffs, MIDI OUT on GP%d, FS %s\n",
-                  ENGINE_NAMES[currentEngine], engineNumPresets(), (int)NUM_RIFFS, PIN_MIDI_TX, fsOk ? "ok" : "absent");
+    Serial.printf("[Carpenter Synth] ready - engine %s, %d presets, %d riffs, MIDI OUT on GPIO%d, FS %s, heap %u KB\n",
+                  ENGINE_NAMES[currentEngine], engineNumPresets(), (int)NUM_RIFFS, PIN_MIDI_TX,
+                  fsOk ? "ok" : "absent", (unsigned)(ESP.getFreeHeap() / 1024));
 }
 
-// Metronome: a 6 ms gate pulse on GP14 at the top of each beat.  Cheap, silent
+// Metronome: a 6 ms gate pulse on PIN_CLICK_OUT at the top of each beat.  Cheap, silent
 // in the audio path, and drives an LED or a click track input directly.
 static void metronomeTick() {
     static unsigned long pulseUntil = 0;
     static uint8_t lastStep = 255;
+    if (PIN_CLICK_OUT < 0) return;
     if (!gs.metronome) { digitalWrite(PIN_CLICK_OUT, LOW); return; }
     Sequencer& s = seqs[INTERNAL_TRACK];
     if (s.playState() == PlayState::PLAYING) {
@@ -927,32 +1025,14 @@ void loop() {
     arpProcess();
 
     // ── USB disk mode ────────────────────────────────────────────────────────
-    // Most OSes auto-mount a new USB drive the instant it enumerates -- no
-    // user action required -- so usbPlug() can fire seconds after boot with
-    // the cable just providing power/Serial, not because anyone chose to
-    // browse files. The filesystem itself is already protected at every
-    // access point (storage.cpp / voicebank.cpp both check g_diskMode before
-    // touching FatFS), so nothing here needs the sequencer to stop or the
-    // screen to be taken over for an incidental mount -- only the deliberate,
-    // on-screen SETTINGS -> USB DRIVE path does that (uiUsbBegin() above).
-    //
-    // Deferred mount/unmount requested by the USB callbacks (which run in IRQ
-    // context and only set flags). Both end up erasing flash, so park the
-    // audio core around them exactly like a save.
-    if (g_fsUnmountReq) {
-        g_fsUnmountReq = false;
-        audioFlashBegin();
-        FatFS.end();
-        audioFlashEnd();
-    }
+    // The host ejected the drive (mscStartStop() runs in the TinyUSB task and
+    // only sets a flag): take the filesystem back here, like a save would.
+#if WOLF_USB_DRIVE
     if (g_fsRemountReq) {
         g_fsRemountReq = false;
-        audioFlashBegin();
-        FatFS.begin();
-        audioFlashEnd();
-        g_diskMode      = false;
-        g_dx7BanksDirty = true;       // rescan /banks now that it is ours again
+        if (g_diskMode) usbDriveRelease();
     }
+#endif
     static bool wasDiskMode = false;
     if (g_diskMode != wasDiskMode) {
         wasDiskMode = g_diskMode;
@@ -967,6 +1047,22 @@ void loop() {
 
     controls.update();
     ui.setShift(controls.shift.isHeld());
+
+    // ── Touch ──────────────────────────────────────────────────────────────
+    // Polled, not IRQ-driven. A resistive panel reads "not pressed" for the
+    // odd sample under a steady finger, so a lift only counts after a few in
+    // a row -- otherwise every drag would stutter into a string of taps.
+    static unsigned long lastTouchPoll = 0;
+    if (millis() - lastTouchPoll >= TOUCH_POLL_MS) {
+        lastTouchPoll = millis();
+        static int tx = 0, ty = 0;
+        static uint8_t upCount = 0;
+        static bool tDown = false;
+        int x, y;
+        if (touchRead(x, y)) { tx = x; ty = y; tDown = true; upCount = 0; }
+        else if (tDown && ++upCount >= 3) tDown = false;
+        ui.touch(tDown, tx, ty);
+    }
 
     int d = controls.encoder.getDelta();
     if (d != 0) ui.onEncoder(d);
@@ -985,13 +1081,11 @@ void loop() {
 
     // ── Performance switches: octave transpose (external MIDI keyboard) ────
     if (controls.octDown.wasPressed() && g_octaveShift > -3) {
-        g_octaveShift--;
-        char b[12]; snprintf(b, sizeof(b), "OCT %+d", (int)g_octaveShift);
+        char b[12]; snprintf(b, sizeof(b), "OCT %+d", uiKbdOctave(-1));
         ui.toast(b);
     }
     if (controls.octUp.wasPressed() && g_octaveShift < 3) {
-        g_octaveShift++;
-        char b[12]; snprintf(b, sizeof(b), "OCT %+d", (int)g_octaveShift);
+        char b[12]; snprintf(b, sizeof(b), "OCT %+d", uiKbdOctave(1));
         ui.toast(b);
     }
 

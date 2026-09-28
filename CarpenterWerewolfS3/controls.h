@@ -1,17 +1,19 @@
 #pragma once
 // ============================================================================
 //  Carpenter Synth — controls.h
-//  Rotary encoder (ISR quadrature decode + debounced push), five panel
-//  buttons with short/long-press detection, two performance switches
-//  (OCT DOWN/UP) and two performance pots (CUTOFF/RESONANCE) — the exact
-//  CS-80/New York Ripper board control set.
+//  The xtro board's physical control set -- rotary encoder (ISR quadrature
+//  decode + debounced push), five panel buttons with short/long-press
+//  detection, two performance switches (OCT DOWN/UP) and two performance
+//  pots (CUTOFF/RESONANCE) -- all OPTIONAL on the werewolf, whose primary
+//  input is the touchscreen (ui.h). Any control whose pin is -1 in config.h
+//  simply never reports anything.
 // ============================================================================
 #include <Arduino.h>
 #include "config.h"
 
 class RotaryEncoder {
 public:
-    RotaryEncoder(uint8_t pinA, uint8_t pinB, uint8_t pinSW);
+    RotaryEncoder(int8_t pinA, int8_t pinB, int8_t pinSW);
     void begin();
     int  getDelta();            // detents since last call (signed)
     void update();              // poll push switch (call from loop)
@@ -19,11 +21,10 @@ public:
     bool wasLongPress();        // long press (consumed)
     bool isHeld();
 
-    static void isrA();
-    static void isrB();
+    static void isr();
 
 private:
-    uint8_t _pinA, _pinB, _pinSW;
+    int8_t _pinA, _pinB, _pinSW;
     volatile int _count = 0;
     volatile uint8_t _last = 0;
     // push switch state
@@ -34,7 +35,7 @@ private:
 
 class Button {
 public:
-    explicit Button(uint8_t pin, bool activeLow = true);
+    explicit Button(int8_t pin, bool activeLow = true);
     void begin();
     void update();
     bool wasPressed();
@@ -43,7 +44,7 @@ public:
     bool isHeld();
 
 private:
-    uint8_t _pin; bool _activeLow;
+    int8_t _pin; bool _activeLow;
     bool _lastState = false, _state = false;
     bool _pressedFlag = false, _releasedFlag = false;
     bool _longFired = false, _lpReported = false;
@@ -56,14 +57,14 @@ private:
 // not keep re-asserting the same value every loop tick.
 class Pot {
 public:
-    explicit Pot(uint8_t pin);
+    explicit Pot(int8_t pin);
     void  begin();
     void  update();          // call every loop() tick
     float value() const { return _smoothed; }
     bool  changed();         // true once per meaningful movement since the last call
 
 private:
-    uint8_t _pin;
+    int8_t  _pin;
     float   _smoothed = 0.0f;
     float   _lastReported = -1.0f;
 };

@@ -1,8 +1,17 @@
 #ifndef _dexed_if_common_h
 #define _dexed_if_common_h
 
+#if __has_include(<pico.h>)
 #include <pico.h>
 #include <pico/time.h>
+#define DEXED_PICO_TIME 1
+#else
+// Werewolf S3 (ESP-IDF underneath arduino-esp32): millis() below comes from
+// the IDF's microsecond timer instead of the Pico SDK's.
+#include <stdint.h>
+#include <stddef.h>
+#include <esp_timer.h>
+#endif
 
 // This header is pulled into two different kinds of translation units:
 //  1. Synth_Dexed's own .cpp files (dexed.cpp etc.) — plain pico-sdk code,
@@ -53,7 +62,11 @@ static inline int32_t signed_saturate_rshift(int32_t val, int bits, int rshift)
 }
 
 #ifndef millis
+#ifdef DEXED_PICO_TIME
 #define millis() ((uint32_t)to_ms_since_boot(get_absolute_time()))
+#else
+#define millis() ((uint32_t)(esp_timer_get_time() / 1000))
+#endif
 #endif
 
 #endif

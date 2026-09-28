@@ -13,7 +13,14 @@
 
 // ─── The wavetable ROM — see ppgwave.h's file banner for what these are and
 // why they're procedural rather than a factory-ROM dump ───────────────────
+#include "bigmem.h"
+#if WOLF_BIGMEM
+// 48 KB of generated wavetables: PSRAM on the werewolf S3 (bigmem.h),
+// allocated by ppgBuildTables() before anything reads it.
+static int8_t (*PPG_TABLE)[PPG_WAVES_PER_TABLE][PPG_WAVE_LEN] = nullptr;
+#else
 static int8_t PPG_TABLE[PPG_NUM_TABLES][PPG_WAVES_PER_TABLE][PPG_WAVE_LEN];
+#endif
 static bool   ppgTablesBuilt = false;
 
 const char* const PPG_TABLE_NAMES[PPG_NUM_TABLES] = { "HARMONIC", "FORMANT", "PWM SWEEP" };
@@ -25,6 +32,12 @@ static inline int8_t ppgQuantize(float x) {
 
 void ppgWavetablesInit() {
     if (ppgTablesBuilt) return;
+#if WOLF_BIGMEM
+    if (!PPG_TABLE)
+        PPG_TABLE = (int8_t (*)[PPG_WAVES_PER_TABLE][PPG_WAVE_LEN])
+                    bigAlloc((size_t)PPG_NUM_TABLES * PPG_WAVES_PER_TABLE * PPG_WAVE_LEN);
+    if (!PPG_TABLE) { g_bigAllocFailed = true; return; }
+#endif
     ppgTablesBuilt = true;
 
     // Table 0: HARMONIC — a brightness sweep, sine (wave 0) through an

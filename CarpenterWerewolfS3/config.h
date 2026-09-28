@@ -1,112 +1,121 @@
 #pragma once
 // ============================================================================
-//  Carpenter Synth — config.h
-//  Board : Raspberry Pi Pico 2 / RP2350, 16 MB flash (arduino-pico core)
+//  Carpenter Synth — config.h        WEREWOLF S3 EDITION
+//  Board : ESP32-S3 (DevKitC-1 style), 16 MB flash (arduino-esp32 3.x core)
 //  Audio : 17-engine multi-synth (up to 10-voice each, one live at a time,
-//          see engine.h) -> I2S -> PCM5102
-//  Disp  : 128x64 OLED (SSD1309) on hardware I2C
-//  Input : 1x rotary encoder w/ push + 5x momentary switches + 2x
-//          performance switches (GP2/GP3) + 2x analog pots (GP26/GP27)
+//          see engine.h) -> I2S -> PCM5102A
+//  Disp  : 3.2" ILI9341 320x240 SPI TFT, XPT2046 resistive touch
+//  Input : the touchscreen (soft keys + direct touch), plus OPTIONAL
+//          encoder, five buttons and two pots on spare GPIOs
 //
-//  CS-80 / New York Ripper hardware edition.  Exact port of the main xtro
-//  board: same pinout, same OLED, same encoder-and-five-buttons panel, same
-//  two performance switches and two pots — see that project's own config.h,
-//  which this one is a line-for-line hardware match of.  Only the synthesis
-//  side differs, and only in that this build carries seventeen selectable
-//  engines (engine.h) instead of one fixed voice.  Nothing below the
-//  "Audio" heading changed in this port: the DSP, every engine constant and
-//  the whole effects/sequencer/storage layout are byte-for-byte what the
-//  240x240 build ran.  MIDI keeps its original pins untouched — see the
-//  MIDI section below.
+//  Werewolf hardware: the display, touch, DAC and MIDI pins below are the
+//  same ones the werewolf's earlier ESP32-S3 build (WerewolfAmyS3) used, so
+//  an existing werewolf S3 harness needs no rewiring. The synthesis side
+//  (engines, effects, sequencer, storage layout) is the xtro Carpenter Synth
+//  unchanged -- only the hardware layer below and the panel UI differ.
+//
+//  Pins the ESP32-S3 must not be given: 26-32 (SPI flash), 33-37 (octal
+//  PSRAM on N16R8 modules), 19/20 (native USB), 0/3/45/46 (strapping --
+//  see the notes where one of them IS used).
 // ============================================================================
 
 #include <Arduino.h>
 
-// ─── I2S audio out -> PCM5102 ───────────────────────────────────────────────
-// The I2S PIO needs BCLK and LRCLK on consecutive GPIOs (LRCLK = BCLK + 1).
-// PCM5102 wiring:  BCK<-GP15  LRCK<-GP16  DIN<-GP17  SCK->GND (internal PLL)
-//                  FLT/DEMP/FMT to GND, XSMT to 3V3.
-#define PIN_I2S_BCLK   15      // -> PCM5102 BCK   (LRCK is BCLK+1 = GP16)
-#define PIN_I2S_DOUT   17      // -> PCM5102 DIN
+// ─── ILI9341 TFT (SPI2 / FSPI, native IOMUX pins for 40 MHz) ────────────────
+#define PIN_TFT_SCLK   12
+#define PIN_TFT_MOSI   11
+#define PIN_TFT_MISO   13
+#define PIN_TFT_CS     10
+#define PIN_TFT_DC      9
+#define PIN_TFT_RST    14
+#define PIN_TFT_BL     21      // backlight, active HIGH, PWM-dimmed
+#define TFT_SPI_HZ     40000000
+// Landscape. 0x28 = MV|BGR (connector on the left); 0xE8 = MX|MY|MV|BGR
+// turns it 180 degrees. If red and blue come out swapped, drop the 0x08 bit.
+#define TFT_MADCTL     0xE8
+#define TFT_INVERT     0       // 1 for the (rarer) modules that need INVON
 
-// ─── 128x64 OLED over hardware I2C ──────────────────────────────────────────
-// SSD1309 — same panel and driver as the CS-80/NYR board. Driven with U8g2
-// (see ui.h's SynthOled typedef) rather than a hand-rolled register-bang
-// driver or the old ST7789/Adafruit-GFX canvas shim.
-#define OLED_DRIVER_SSD1309
-// #define OLED_DRIVER_SH1106
-// #define OLED_DRIVER_SSD1306
-#define PIN_OLED_SDA    4
-#define PIN_OLED_SCL    5
-#define OLED_ADDR      0x3C
-#define OLED_I2C_HZ    1000000     // 400000 is the safe fallback
+// ─── XPT2046 touch (the module's T_* header, its own SPI3 bus) ──────────────
+#define PIN_TOUCH_CLK  15
+#define PIN_TOUCH_MOSI 16      // T_DIN
+#define PIN_TOUCH_MISO 47      // T_DO
+#define PIN_TOUCH_CS    8
+#define PIN_TOUCH_IRQ   3      // wired but unused: the panel is polled
+#define TOUCH_SPI_HZ   2000000
+#define TOUCH_Z_MIN     350    // pressure below this = not touched
+#define TOUCH_POLL_MS    8
 
-// ─── Rotary encoder (EC11 w/ push) ──────────────────────────────────────────
-#define PIN_ENC_A       6
-#define PIN_ENC_B       7
-#define PIN_ENC_SW      8
+// ─── I2S audio out -> PCM5102A ──────────────────────────────────────────────
+// PCM5102A: SCK->GND (internal PLL), FLT/DEMP/FMT->GND, XSMT->3V3.
+#define PIN_I2S_BCLK    5
+#define PIN_I2S_LRCK    4
+#define PIN_I2S_DOUT    6
+
+// ─── DIN MIDI on UART1 (IN via 6N138, OUT via 2 resistors) ──────────────────
+#define PIN_MIDI_RX    18
+#define PIN_MIDI_TX    17
+#define MIDI_BAUD   31250
+
+// ─── Optional panel controls ────────────────────────────────────────────────
+// The touchscreen does everything on its own. These are the xtro board's
+// physical controls, on the S3 pins the werewolf leaves free; set any pin to
+// -1 if it is not fitted. Buttons and the encoder are to GND with internal
+// pull-ups, so an unwired pin just reads "not pressed".
+#define PIN_ENC_A      39
+#define PIN_ENC_B      40
+#define PIN_ENC_SW     41
 #define ENC_TICKS_PER_DETENT 4
 
-// ─── 5 momentary switches (active-low to GND, internal pull-ups) ────────────
-#define PIN_BTN_PLAY    9
-#define PIN_BTN_SHIFT  10
-#define PIN_BTN_PAGE   11
-#define PIN_BTN_TRACK  12
-#define PIN_BTN_MUTE   13
+#define PIN_BTN_PLAY   42
+#define PIN_BTN_SHIFT  38      // also the safe-boot key (held at power-up)
+#define PIN_BTN_PAGE    7
+#define PIN_BTN_TRACK   2
+#define PIN_BTN_MUTE    1
+// OCT DOWN/UP transpose an external MIDI keyboard. GPIO0 is the dev board's
+// own BOOT button, so OCT DOWN works with nothing wired -- just don't hold it
+// while powering up (that is the ROM's download mode). GPIO46 is an input-only
+// strapping pin whose boot-time default is the "not pressed" level here.
+#define PIN_BTN_OCT_DOWN 0
+#define PIN_BTN_OCT_UP  46
 #define DEBOUNCE_MS    15
 #define LONG_PRESS_MS  600
 
-#define PIN_CLICK_OUT  14      // metronome / gate out
-
-// ─── 2 performance momentary switches (active-low to GND, internal pull-ups) ─
-// OCT DOWN / OCT UP: quick transpose for an external MIDI keyboard on MIDI IN,
-// independent of the sequencer's own patterns, which are left untouched.
-#define PIN_BTN_OCT_DOWN 2
-#define PIN_BTN_OCT_UP    3
-
-// ─── 2 analog pots on the ADC-capable pins (GP26/27 = ADC0/ADC1) ────────────
-// Hands-on hardware knobs for the two controls most worth having under a
-// finger during a performance: filter cutoff and resonance, mapped through
-// engineFilterCutoffParamId()/engineFilterResonanceParamId() (engine.h) so
-// they always reach whichever engine is currently live. Continuously read
-// and applied directly (see controls.h's Pot class) — turning the knob
-// always wins, the same as a real analogue synth's non-motorized panel.
-#define PIN_POT_CUTOFF     26
-#define PIN_POT_RESONANCE  27
+// Pots: two ADC1 pins would be needed and every ADC1 pin is spoken for above,
+// so the xtro board's CUTOFF/RESONANCE pots are off by default -- the same
+// two parameters are on every engine's FILTER page. A floating ADC pin reads
+// noise, which would drift the filter, hence off rather than "wire if you
+// like". To fit them, free two of GPIO 1/2/7 (ADC1_CH0/CH1/CH6) above.
+#define POTS_FITTED     0
+#define PIN_POT_CUTOFF     -1
+#define PIN_POT_RESONANCE  -1
 #define POT_ADC_BITS       12
 #define POT_ADC_MAX        4095.0f
 #define POT_DEADBAND       (1.0f / 400.0f)   // ~0.25% of travel before re-applying
 
-// ─── MIDI: OUT on GP1, IN on GP0, via PIO UART ──────────────────────────────
-#define PIN_MIDI_TX     1
-#define PIN_MIDI_RX     0
-#define MIDI_BAUD   31250
-#define MIDI_USE_PIO_UART 1
+// Metronome gate out. GPIO43 is UART0 TX: the ROM prints a boot banner on it
+// at reset (a burst of pulses on the click output), after which it is ours --
+// the sketch's Serial is the native USB port, not UART0.
+#define PIN_CLICK_OUT  43
 
-// ─── CPU clock ──────────────────────────────────────────────────────────────
-// Set from the Arduino IDE:  Tools -> CPU Speed.
-//
-//   150 MHz  — the stock default.  Guaranteed to boot on any RP2350; the CPU
-//              guard simply runs fewer voices.  START HERE if anything is odd.
-//   250 MHz  — the tested target for the full MAX_VOICES = 8 polyphony.
-//
-// Nothing in this firmware requires 250 MHz: core1 measures its own render time
-// and lowers the voice ceiling if it runs short, so an underclocked board plays
-// correctly with less polyphony rather than glitching.  Check the PERF page.
-//
-// Do NOT re-clock at runtime.  The core's main() runs set_sys_clock_khz(F_CPU),
-// then brings USB up, then launches core1, and only then calls setup() — so
-// re-clocking inside setup() moves the clock out from under an enumerated USB
-// peripheral and a running core1.
+// ─── CPU / cores ────────────────────────────────────────────────────────────
+// NOTE the numbering is the reverse of the xtro build's: there "core0" was
+// control and "core1" audio (arduino-pico's setup1/loop1), and the engine
+// sources still say so in their comments. Here audio is on core 0.
+// Tools -> CPU Frequency: 240 MHz. Audio renders on core 0 in its own task
+// (nothing else runs there: no Wi-Fi, no Bluetooth); the Arduino loop() --
+// sequencer, UI, MIDI, storage -- stays on core 1.
+#define AUDIO_CORE        0
+#define AUDIO_TASK_PRIO  (configMAX_PRIORITIES - 2)
+#define AUDIO_TASK_STACK  8192
 
 // ─── Audio ──────────────────────────────────────────────────────────────────
 #define SAMPLE_RATE       48000
 #define SAMPLE_RATE_F     48000.0f
 #define INV_SAMPLE_RATE   (1.0f / SAMPLE_RATE_F)
-#define AUDIO_BLOCK       64      // samples rendered per pass on core1 (1.33 ms)
+#define AUDIO_BLOCK       64      // samples rendered per pass on the audio core (1.33 ms)
 // How many AUDIO_BLOCKs of DMA cushion the I2S driver keeps queued.  Costs
 // AUDIO_BLOCK*4 bytes each (16 x 64 x 4 = 4 KB) and buys ~21 ms of slack, so a
-// flash erase or a heavy LCD redraw on core0 can't punch a hole in the output.
+// flash erase or a heavy redraw on the UI core can't punch a hole in the output.
 #define I2S_BUFFERS       16
 
 // Shared voice allocator ceiling — sized to the widest engine's polyphony,
@@ -185,20 +194,15 @@
 #define BPM_MAX        300
 #define SWING_MAX      66      // % maximum swing
 
-// ─── Display layout ─────────────────────────────────────────────────────────
-#define DISP_W            128
-#define DISP_H             64
-#define HEADER_H           10
-#define STEP_CELL_W        16    // 128 / 8 columns, exact
-#define STEP_CELL_H        12
-#define STEP_ROW1_Y        12
-#define STEP_ROW2_Y        25
-#define UI_REFRESH_MS     33    // ~30 fps
+// ─── Display ────────────────────────────────────────────────────────────────
+#define DISP_W           320
+#define DISP_H           240
+#define UI_REFRESH_MS     33      // ~30 fps; only changed bands are sent
 
 // ─── Storage ────────────────────────────────────────────────────────────────
-// FatFS (not LittleFS) so the partition can also be exported over USB.
-// Tools -> Flash Size: pick a layout that reserves a big FS on the 16 MB part,
-// e.g. "8 MB Sketch / 8 MB FS".
+// FAT (arduino-esp32's FFat, on the "ffat" partition) rather than LittleFS so
+// the same partition can be exported to a computer over USB (SETTINGS -> USB
+// DRIVE). Tools -> Partition Scheme: "16M Flash (3MB APP/9.9MB FATFS)".
 #define STORAGE_MAGIC     0x5553   // 'US' — UltimateSynth
 // Bumped from 2: GlobalSettings/UserPreset moved from the single-engine
 // params[NUM_PARAMETERS] shape to an engineId + params[MAX_ENGINE_PARAMS]
@@ -212,7 +216,9 @@
 // the live patch is gone (removed feature, not a bug fix), so its byte is no
 // longer part of the struct. Old settings.bin/preset files are rejected
 // outright, not migrated, same policy as every prior bump.
-#define STORAGE_VERSION   6
+// Bumped from 6 (werewolf S3 port): GlobalSettings gained phosphor and
+// crtLines for the colour panel.
+#define STORAGE_VERSION   7
 #define USER_PRESET_SLOTS 64
 // A saved song is ~90 bytes (BPM, name, and each track's chain + which
 // pattern it starts on — songs reference pattern *slots*, not copies of

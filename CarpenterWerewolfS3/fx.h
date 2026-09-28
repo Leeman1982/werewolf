@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include "config.h"
 #include "dsp_tables.h"
+#include "bigmem.h"
 
 // ============================================================================
 //  fx.h — the master effect chain: bitcrusher -> chorus -> delay -> reverb.
@@ -10,8 +11,9 @@
 //  (`& MASK`) instead of a modulo or a wrap branch — one AND on the sample path
 //  where the original had a compare-and-subtract per tap.
 //
-//  All state lives in .bss (SRAM) and every method is inline so it lands inside
-//  the SRAM-resident block renderer.
+//  Every method is inline so it lands inside the block renderer. On the
+//  werewolf S3 the delay and reverb lines are allocated from PSRAM at the
+//  first begin() (bigmem.h); on the host they stay static arrays.
 // ============================================================================
 
 // ─── Bit / sample-rate crusher ──────────────────────────────────────────────
@@ -84,13 +86,23 @@ struct Chorus {
 
 // ─── Stereo delay with tempo sync and ping-pong ─────────────────────────────
 struct StereoDelay {
+#if WOLF_BIGMEM
+    int16_t* bufL = nullptr;       // DELAY_BUF_LEN each, from bigAlloc()
+    int16_t* bufR = nullptr;
+#else
     int16_t  bufL[DELAY_BUF_LEN];
     int16_t  bufR[DELAY_BUF_LEN];
+#endif
     uint32_t wpos = 0;
     float    lenL = 12000.0f, lenR = 12000.0f;   // current (slewed) tap distance
     float    tgtL = 12000.0f, tgtR = 12000.0f;   // requested tap distance
 
     void begin() {
+#if WOLF_BIGMEM
+        if (!bufL) bufL = (int16_t*)bigAlloc(DELAY_BUF_LEN * sizeof(int16_t));
+        if (!bufR) bufR = (int16_t*)bigAlloc(DELAY_BUF_LEN * sizeof(int16_t));
+        if (!bufL || !bufR) { g_bigAllocFailed = true; return; }
+#endif
         for (uint32_t i = 0; i < DELAY_BUF_LEN; i++) { bufL[i] = 0; bufR[i] = 0; }
         wpos = 0;
     }
@@ -153,14 +165,26 @@ struct Reverb {
     static const uint16_t ALEN_R[NAP];
 
     // Sized to the longest entry in CLEN/ALEN below, not to the average.
+#if WOLF_BIGMEM
+    float    (*cbuf)[1700] = nullptr;   // [NCOMB][1700], from bigAlloc()
+    float    (*abuf)[610]  = nullptr;   // [NAP][610]
+    float    (*abufR)[610] = nullptr;
+#else
     float    cbuf[NCOMB][1700];
     float    abuf[NAP][610];
     float    abufR[NAP][610];
+#endif
     uint16_t cpos[NCOMB], apos[NAP], aposR[NAP];
     float    cfilt[NCOMB];
     float    feedback = 0.84f, damp = 0.4f;
 
     void begin() {
+#if WOLF_BIGMEM
+        if (!cbuf)  cbuf  = (float (*)[1700])bigAlloc(sizeof(float) * NCOMB * 1700);
+        if (!abuf)  abuf  = (float (*)[610])bigAlloc(sizeof(float) * NAP * 610);
+        if (!abufR) abufR = (float (*)[610])bigAlloc(sizeof(float) * NAP * 610);
+        if (!cbuf || !abuf || !abufR) { g_bigAllocFailed = true; return; }
+#endif
         for (int i = 0; i < NCOMB; i++) {
             for (int j = 0; j < 1700; j++) cbuf[i][j] = 0.0f;
             cpos[i] = 0; cfilt[i] = 0.0f;

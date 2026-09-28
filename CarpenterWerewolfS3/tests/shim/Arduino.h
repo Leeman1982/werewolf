@@ -20,6 +20,7 @@ using std::max;
 
 unsigned long millis();
 unsigned long micros();
+void delay(unsigned long ms);
 void hostAdvanceUs(unsigned long us);
 
 static inline long randomN(long n) { return n > 0 ? (long)(rand() % n) : 0; }

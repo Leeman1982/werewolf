@@ -1,383 +1,312 @@
-# Carpenter Synth — "Synthesize the Season" edition
+# Carpenter Synth — WEREWOLF S3 edition
 
-A multi-engine analogue-architecture workstation on the **exact CS-80 / New
-York Ripper board**: a 128x64 SSD1309 OLED over I2C, one rotary encoder with
-push, five panel buttons, two performance switches (OCT DOWN/UP) and two
-performance pots (CUTOFF/RESONANCE) — same pinout, same panel, same solder
-joints as that hardware's own `config.h`. MIDI OUT stays on **GP1**.
+![Boot title card](docs/screens/00_splash.png)
 
-This build layers two ports on top of each other. It starts from the
-song-arranger branch's 4-track step sequencer (time signatures, chains, 200
-riffs, songs) and its full seventeen-engine synth side, and carries both
-onto the main xtro board's exact hardware and pinout — a straight
-UI/control-mapping port, with the sound side untouched byte-for-byte. The
-original single 8-voice virtual-analog engine had already been replaced with
-the multi-engine architecture from this project's own ESP32-S3 branch ("a
-multi-engine analogue-architecture workstation... covering the synths behind
-the scores of John Carpenter, Fabio Frizzi and Claudio Simonetti"), ported
-back onto this RP2350 board. **CS-80, Minimoog, Prophet-5, Prophet-10,
-ARP 2600, ARP Odyssey, Mellotron, Oberheim Four-Voice/SEM, Jupiter-8 and
-System 100 are all fully modelled and selectable — every engine the source
-project modelled at all, plus three more it never staged: a Moog Modular
-System 55/III (the wildcard — the actual synth behind both *Halloween*
-(1978) and *Suspiria* (1977)), and an Oberheim OB-X and a PPG Wave 2.3 (both
-Claudio Simonetti/Goblin instruments this project's own influences named
-outright). Four more round the roster out to seventeen, past subtractive
-analogue polysynths entirely: a Korg MS-20, a Yamaha DX7 (this codebase's
-only FM/phase-modulation engine), an ARP/Solina String Ensemble (its only
-organ-style divide-down engine) and a Sequential Prophet-VS (its only
-vector-synthesis engine).** Sixteen of the seventeen are modelled from each
-machine's own architecture; the DX7 is the exception and runs the real
-Dexed/MSFA engine, for reasons set out in [Synth engines](#synth-engines)
-below — which also makes this firmware GPLv3 as a whole, see
-[Licensing](#licensing).
+The xtro **Carpenter Synth** — seventeen modelled analogue-era engines (CS-80,
+Minimoog, Prophet-5/10, ARP 2600/Odyssey, Mellotron, Oberheim SEM and OB-X,
+Jupiter-8, System 100, Moog Modular, PPG Wave, MS-20, the real Dexed DX7,
+String Ensemble, Prophet-VS), a 4-track 64-step sequencer with chains, 200
+riffs and songs — moved onto the **werewolf**: an **ESP32-S3 with 16 MB
+flash**, a **3.2" ILI9341 320×240 touchscreen** and a **PCM5102A DAC**.
 
-Splash and branding:
+What is carried over byte-for-byte from xtro `05d1933`: every engine, the
+effects, the sequencer, presets, riffs, songs, the storage layout, the MIDI
+parser and every UI action. What is new here:
 
-1. **Boot splash** — "CARPENTER SYNTH" set in the **Minotaur** typeface, over
-   a "STEP SEQ & SYNTH" tagline and a **ZOMBI SS** footer (see
-   `UI::bootStatus()` in `ui.cpp`). The 240x240 build's splash was one RGB565
-   bitmap with its type baked in; that can't survive the drop to a 128x64
-   1-bit panel, so the same three elements are rebuilt in code here. The
-   wordmark is real Minotaur, not an approximation in a stock bitmap font:
-   `tools/ttf_to_xbm.py` rasterizes the three fixed strings straight from
-   `extras/font/minotaur.ttf` into `minotaur_splash.h` (that header's banner
-   carries the exact command to regenerate it). Fixed strings rather than a
-   full glyph set, because these three are the only places the face is used
-   and a whole font would cost flash for nothing.
-2. **Sketch name** — `CarpenterSynth.ino` in place of `UltimateSynthNYR.ino`.
+* **The hardware layer** — I2S audio on its own FreeRTOS task on core 0, DIN
+  MIDI on UART1, FAT storage (FFat), USB drive via TinyUSB, and a
+  hand-written ILI9341 + XPT2046 driver (no display library, no
+  `User_Setup.h`).
+* **The panel** — a native 320×240 colour UI in the visual language of the
+  *NightShift* owner's manual: lime for live data and the playhead, amber for
+  the cursor and anything being edited, red for record/mute/destructive,
+  CRT scanlines, and the same frame on every page. It replaces the xtro
+  build's 128×64 OLED screens; the 80s-horror OLED redesign on
+  `claude/ui-redesign-80s-horror` was only ever design renders, and it does
+  not translate to a colour panel four times the size.
+* **Touch** — a soft-key strip stands in for the xtro board's buttons, and
+  every list row, grid step, pattern card, chain frame and mixer strip can be
+  tapped and dragged directly. The xtro encoder and buttons still work if
+  you wire them (all optional).
+* **Splash** — the title card is set in **Grobe Deutschmeister**
+  (`extras/font/GrobeDeutschmeister.ttf`, rasterized into
+  `splash_wordmark.h` by `tools/ttf_to_xbm.py`).
 
-**Retired in this port:** the old single engine's "ZOMBI SS" patch-bay mode
-(named for the System 100, but really a graphical front end onto that one
-engine's specific modulation routing — LFO dest, ring mod, hard sync, filter
-mode) has no equivalent shape on a CS-80 or a Minimoog, so it's gone rather
-than carried forward broken. This is unrelated to the actual **Roland System
-100** synth engine now modelled below — that's a full new engine, not a
-revival of the old patch-bay UI — see [Synth engines](#synth-engines).
+| | |
+|---|---|
+| ![Step grid](docs/screens/01_main.png) | ![Menu](docs/screens/03_menu.png) |
+| ![Step edit](docs/screens/05_step_edit_editing.png) | ![Patterns](docs/screens/06_patterns.png) |
+| ![Chain](docs/screens/07_chain.png) | ![Synth edit](docs/screens/11_synth_edit.png) |
+| ![Mixer](docs/screens/13_mixer.png) | ![System monitor](docs/screens/16_perf.png) |
+| ![Settings](docs/screens/15_settings.png) | ![Amber phosphor](docs/screens/22_main_amber.png) |
 
-Target: Raspberry Pi Pico 2 / RP2350 with 16 MB flash.
+Every image above is the firmware's own `ui.cpp` and `gfx.cpp`, compiled on a
+PC and dumped exactly as it would be sent to the ILI9341 — see
+[Tools](#tools). They are not mockups.
 
 ---
 
-## First flash — read this
+## Status — read this first
 
-The display comes up **before anything else** in `setup()` and then reports each
-boot stage on the bottom line: `BOOTING → DSP TABLES → EFFECTS → STORAGE →
-SEQUENCER → MIDI GP1 → AUDIO → READY`. If the machine ever stops during
-startup, the screen names the stage it stopped in.
-
-**If the screen stays blank**, work down this list:
-
-1. **CPU Speed → 150 MHz.** This is the stock default and always boots. Nothing
-   here needs 250 MHz — core1 measures its own load and runs fewer voices
-   instead of glitching. Move up to 250 MHz once it is running.
-2. **Board → Generic RP2350.** The stock "Raspberry Pi Pico 2" profile only
-   offers 4 MB flash layouts.
-3. **Hold SHIFT (GP10) while powering up.** Safe boot: skips the filesystem
-   entirely and starts on built-in defaults.
-4. Check the OLED's I2C wiring — SDA=GP4, SCL=GP5, address `0x3C` — and that
-   the **U8g2** library is installed.
-
-There is **no watchdog** in this firmware, deliberately — same as NYR. Flash
-operations are the only things slow enough to trip one, and resetting the chip
-part-way through a flash write is strictly worse than waiting for it.
-
-A missing or unformatted filesystem is **not fatal**: the instrument is fully
-playable from RAM and the screen says `READY (NO FS)`. To get saving working,
-go to **SETTINGS → FORMAT FS** and **hold SHIFT** while pressing. That takes
-tens of seconds on an 8 MB partition and shows `FORMATTING FS...` while it
-works — it is not frozen.
+* **Compiled, not yet run on hardware.** All three board configurations
+  build cleanly with arduino-esp32 3.3.12 (`tests/build_s3.sh`), the
+  seventeen-engine DSP test suite passes on the host under ASan/UBSan
+  (`tests/run.sh`), and every screen renders correctly through the real UI
+  code (`tools/preview/build.sh`). Nothing has been flashed to a werewolf
+  yet, so the following have **not** been verified on the device:
+  * **CPU headroom.** The engines were tuned on an RP2350 at 150–250 MHz;
+    the S3's LX7 cores at 240 MHz should be in the same class, but the
+    heaviest engines at full polyphony (CS-80's 16 paths, Prophet-10, the
+    DX7) are the ones to check first on MENU → PERF. The CPU guard sheds
+    voices rather than glitching, and **AUDIO XRUNS** counts any block
+    that missed its deadline.
+  * **The touch default and panel orientation.** Calibration runs on first
+    boot, so the default mapping does not matter, but `TFT_MADCTL` in
+    `config.h` may need changing for your module (see Troubleshooting).
+  * **USB DRIVE** end to end on Windows/macOS/Linux (4 KB-sector FAT).
+* **Needs PSRAM.** The delay lines, reverb, PPG wavetables and screen buffer
+  live in PSRAM (the S3 has 320 KB of usable internal RAM against the RP2350's 520 KB,
+  once the IDF takes its share). Use an **N16R8** module (16 MB flash, 8 MB
+  octal PSRAM) — most "ESP32-S3 16 MB" dev boards are. A board without PSRAM
+  stops at boot with **NO PSRAM - SEE README** on screen.
 
 ---
 
-## Wiring
+## Hardware
 
-The **exact CS-80 / New York Ripper board** — same pinout, same OLED, same
-panel. Nothing below is a free choice; it's taken directly from that
-hardware's own `config.h`, unchanged.
+Target: **ESP32-S3-DevKitC-1 N16R8** (or any ESP32-S3 module with 16 MB flash
+and PSRAM). The display, touch, DAC and MIDI pins are the ones the werewolf's
+earlier ESP32-S3 build (`WerewolfAmyS3`) used, so an existing werewolf S3
+harness needs no rewiring.
 
 ```
-                     RP2350 (Pico 2, 16 MB)
-                    ┌────────────────────────┐
-  MIDI IN  ─────────┤ GP0                    │
-  MIDI OUT ─────────┤ GP1   (PIO UART)       │
-  OCT DOWN ─────────┤ GP2                    │
-  OCT UP   ─────────┤ GP3                    │
-  OLED SDA ─────────┤ GP4   hardware I2C     │
-  OLED SCL ─────────┤ GP5                    │
-  ENC A    ─────────┤ GP6                    │
-  ENC B    ─────────┤ GP7                    │
-  ENC SW   ─────────┤ GP8                    │
-  BTN PLAY  ────────┤ GP9                    │
-  BTN SHIFT ────────┤ GP10                   │
-  BTN PAGE  ────────┤ GP11                   │
-  BTN TRACK ────────┤ GP12                   │
-  BTN MUTE  ────────┤ GP13                   │
-                    │                        │
-  CLICK/GATE OUT ───┤ GP14  (metronome)      │
-                    │                        │
-  I2S BCK  ─────────┤ GP15                   │
-  I2S LRCK ─────────┤ GP16  (= BCK + 1)      │
-  I2S DIN  ─────────┤ GP17                   │
-                    │                        │
-  POT CUTOFF    ────┤ GP26  ADC0             │
-  POT RESONANCE ────┤ GP27  ADC1             │
-                    └────────────────────────┘
+                     ESP32-S3 (N16R8)
+                    ┌────────────────────────────┐
+  TFT SCK    ───────┤ 12        ILI9341 on SPI2   │
+  TFT MOSI   ───────┤ 11                          │
+  TFT MISO   ───────┤ 13                          │
+  TFT CS     ───────┤ 10                          │
+  TFT DC     ───────┤  9                          │
+  TFT RESET  ───────┤ 14                          │
+  TFT LED    ───────┤ 21        backlight (PWM)   │
+  T_CLK      ───────┤ 15        XPT2046 on SPI3   │
+  T_DIN      ───────┤ 16                          │
+  T_DO       ───────┤ 47                          │
+  T_CS       ───────┤  8                          │
+  T_IRQ      ───────┤  3        (wired, unused)   │
+  I2S BCK    ───────┤  5        PCM5102A          │
+  I2S LRCK   ───────┤  4                          │
+  I2S DIN    ───────┤  6                          │
+  MIDI IN    ───────┤ 18        UART1 RX (6N138)  │
+  MIDI OUT   ───────┤ 17        UART1 TX          │
+                    │                             │
+  optional ─ ENC A/B/SW 39/40/41, PLAY 42, SHIFT 38,
+             PAGE 7, TRACK 2, MUTE 1,
+             OCT DOWN 0 (the board's BOOT button), OCT UP 46,
+             metronome click out 43
+                    └────────────────────────────┘
 ```
 
-GP18-25 and GP28-29 are unused and free for anything else you want to add
-(an SD card, extra I/O, ...).
+Avoid 26–37 (flash and octal PSRAM) and 19/20 (the native USB port).
 
-### PCM5102A DAC
-| PCM5102A | Pico 2 |
-|----------|--------|
-| VCC | 3V3 |
+### PCM5102A
+| PCM5102A | ESP32-S3 |
+|---|---|
+| VIN | 3V3 |
 | GND | GND |
-| BCK | GP15 |
-| LCK | GP16 |
-| DIN | GP17 |
-| SCK | GND (internal PLL) |
-| FMT | GND (I2S standard) |
+| BCK | 5 |
+| LCK | 4 |
+| DIN | 6 |
+| SCK, FLT, DEMP, FMT | GND |
 | XSMT | 3V3 (unmute) |
 
-### OLED (128x64, SSD1309)
-Hardware I2C — SDA=GP4, SCL=GP5, address `0x3C`, up to 1 MHz bus clock
-(`OLED_I2C_HZ` in `config.h`; 400 kHz is the safe fallback). Driven with
-**U8g2** (`U8G2_SSD1309_128X64_NONAME0_F_HW_I2C`, full-buffer mode) rather
-than a hand-rolled register-bang driver — see `ui.h`'s `SynthOled` typedef,
-which also has SH1106/SSD1306 fallbacks defined (untested on this board;
-SSD1309 is the confirmed part).
-
-### Rotary encoder + 5 buttons + 2 performance switches
-The encoder (EC11-style, quadrature + push) is on GP6/GP7/GP8. PLAY, SHIFT,
-PAGE, TRACK and MUTE are momentary, wired to GND (internal pull-ups, no
-external parts needed), on GP9-GP13. OCT DOWN/OCT UP on GP2/GP3 are the same
-kind of switch, wired identically — see **Controls** below for the full
-mapping, and **Hardware controls** for what the OCT buttons and the two pots
-actually do.
-
-### MIDI OUT on GP1 — why it needs a PIO UART
-
-GP1 is **not** a hardware-UART TX pin on RP2350. UART0 TX can only be routed to
-GP0, GP12, GP16 or GP28, so `Serial1.setTX(1)` would silently do nothing. The
-firmware therefore builds the UART out of a **PIO state machine**
-(arduino-pico's `SerialPIO`), which can drive any GPIO with exact 31250-baud
-timing. GP0 is set up as MIDI IN on the same PIO port, so an opto-isolated input
-can be added later without moving anything.
-
+### DIN MIDI
 ```
-GP1 ──── 220R ──── DIN pin 5   (or TRS-A tip)
-3V3 ──── 220R ──── DIN pin 4   (or TRS-A ring)
-GND ─────────────── DIN pin 2   (shield / sleeve)
+MIDI IN:   DIN 5 ──220Ω──► 6N138 pin 2        6N138 pin 8 ── 3V3
+           DIN 4 ────────► 6N138 pin 3        6N138 pin 5 ── GND
+           1N4148 across pins 2–3 (cathode to pin 2)
+           6N138 pin 6 ──► GPIO 18, 4.7 kΩ pull-up to 3V3
+MIDI OUT:  GPIO 17 ──10Ω──► DIN 5
+           3V3     ──33Ω──► DIN 4
+           DIN 2 ── GND
 ```
 
-To go back to NYR's original wiring (TX on GP0), set `MIDI_USE_PIO_UART 0` and
-`PIN_MIDI_TX 0` / `PIN_MIDI_RX 1` in `config.h`.
+### Optional panel controls
+Everything is reachable from the touchscreen alone. The xtro board's physical
+controls can be added on the pins above — encoder and buttons to GND, internal
+pull-ups, nothing else needed. Set any pin to `-1` in `config.h` if it is not
+fitted; an unwired pin just reads "not pressed". The CUTOFF/RESONANCE pots are
+**off** (`POTS_FITTED 0`): every ADC1 pin is in use above, and a floating ADC
+pin would drift the filter. The same two parameters are on every engine's
+FILTER page; `config.h` says which pins to free if you want the knobs.
 
 ---
 
 ## Building
 
-**Arduino IDE** with Earle Philhower's arduino-pico core
-(`https://github.com/earlephilhower/arduino-pico/releases/download/global/package_rp2040_index.json`).
+**Arduino IDE** with Espressif's **esp32** core 3.x (tested: 3.3.12).
 
-| Setting | Value |
-|---------|-------|
-| Board | **Generic RP2350** (the stock "Raspberry Pi Pico 2" profile only offers 4 MB flash layouts) |
-| Flash Size | **16 MB (Sketch: 8 MB, FS: 8 MB)** — an FS partition is required for saving |
-| CPU Speed | **150 MHz to start**; 250 MHz for the heaviest engines at full polyphony (CS-80's 16 channel paths, Prophet-10's 10 voices) |
-| CPU Architecture | ARM |
-| USB Stack | **"Pico SDK"** — required for SETTINGS → USB DRIVE. `FatFSUSB` registers through the core's own pluggable-USB layer; the Adafruit TinyUSB stack is a hard compile error against it |
+| Tools menu | Setting |
+|---|---|
+| Board | **ESP32S3 Dev Module** |
+| Flash Size | **16MB (128Mb)** |
+| Partition Scheme | **16M Flash (3MB APP/9.9MB FATFS)** |
+| PSRAM | **OPI PSRAM** (N16R8) |
+| CPU Frequency | **240MHz (WiFi)** |
+| USB Mode | **USB-OTG (TinyUSB)** — needed for SETTINGS → USB DRIVE |
+| USB CDC On Boot | **Enabled** — Serial on the same USB port |
+
+With USB Mode on "Hardware CDC and JTAG" everything except USB DRIVE works;
+the SETTINGS row says **OTG ONLY**.
 
 **Two libraries**, one of which is vendored here:
 
-1. **U8g2** (oliver/olikraus) — install via Library Manager.
-2. **Synth_Dexed** — the DX7 engine. A ready-to-install copy sits at
-   `extras/Synth_Dexed/`; copy that whole folder into your Arduino libraries
-   directory as `Synth_Dexed`:
-   * Windows: `Documents\Arduino\libraries\Synth_Dexed\`
-   * macOS/Linux: `~/Arduino/libraries/Synth_Dexed/`
+1. **U8g2** (olikraus) — Library Manager. Only its fonts and glyph renderer
+   are used; there is no OLED.
+2. **Synth_Dexed** — the DX7 engine. Copy `extras/Synth_Dexed/` into your
+   Arduino libraries folder as `Synth_Dexed`. This copy carries Pico2Dexed's
+   RP2350 patches plus two small guards so the same files also build for the
+   ESP32-S3; do not substitute an upstream Synth_Dexed.
 
-   Restart the IDE afterwards. This copy already carries Pico2Dexed's RP2350
-   patches — no CMSIS-DSP, no Teensy `AudioStream`, plain stdlib maths and its
-   own small `arm_math` shim — so no extra library or build flag is needed.
-   **Do not** substitute an upstream Synth_Dexed from elsewhere: those target
-   a Teensy with an audio shield and assume real CMSIS-DSP, and will not
-   build for RP2350.
+No display, touch, MIDI or audio library is needed: TFT, touch, I2S, UART,
+FAT and USB all come from the core. Put the files in a folder named
+`CarpenterWerewolfS3/` and open `CarpenterWerewolfS3.ino`.
 
-I2S, `SerialPIO`, FatFS and `FatFSUSB` all ship with the core — there is no
-MIDI library and no AudioTools dependency.
-
-Put every file in a folder named `CarpenterSynth/` and open
-`CarpenterSynth.ino`.
-
-Do **not** re-clock at runtime. The core sets the clock, brings USB up and
-launches core1 before `setup()` runs, so changing it there breaks USB
-enumeration. Use Tools → CPU Speed.
+Current build figures (USB-OTG + PSRAM): 801 KB of the 3 MB app partition,
+197 KB of static internal RAM, 130 KB internal heap left at link time.
 
 ### Licensing
 
-**This firmware as a whole is GPLv3.** That follows from the DX7 engine:
-`Synth_Dexed` is Holger Wirtz' MicroDexed layer (**GPLv3**) over Google's
-*music-synthesizer-for-android* FM core (**Apache-2.0**), and linking it makes
-the combined work GPLv3. Both licence texts ship with the vendored copy —
-`extras/Synth_Dexed/LICENSE-GPL3.txt` and `LICENSE-APACHE2.txt`. In practice
-that means anyone you distribute a built binary to is entitled to the
-corresponding source. The Minotaur display font is separate and freeware; see
-`extras/font/MINOTAUR_LICENSE.txt`.
-
-Check the Arduino IDE's build output on your own setup for the exact flash/
-RAM figures — U8g2's full-buffer SSD1309 mode is a 1 KB SRAM footprint, far
-smaller than the 240x240 RGB565 canvas this port used to carry.
-
-### Tests
-
-The logic half of the firmware (DSP tables, effects, sequencer, and every
-engine's DSP/panel layer — all seventeen engines, CS-80 through PPG Wave 2.3,
-the MS-20, DX7, String Ensemble and Prophet-VS) builds and runs natively,
-with AddressSanitizer + UndefinedBehaviorSanitizer on every run:
-
-```
-./tests/run.sh
-```
-
-The hardware half — `ui.cpp`, `controls.cpp`, `midi.cpp`, `storage.cpp` and
-the sketch itself — can't be *run* on the host, but it is type-checked
-there against the real U8g2 headers (cloned on first use into
-`tests/.u8g2/`), so a wrong method signature, a missing constructor
-argument or a `u8g2_font_*` name that does not exist fails here instead of
-in the Arduino IDE:
-
-```
-./tests/syntax_check.sh
-```
-
-Table accuracy, effect boundedness at maximum feedback, sequencer timing
-(jitter, swing, ratchets, micro-timing, probability, chords, stuck notes,
-scale quantisation, Euclid counts, external clock), plus per-engine coverage:
-CS-80's no-self-oscillation/Q-vs-cutoff/saw-glitch/IL-AL-envelope/Hz-per-volt
-behaviour (unchanged from the original single-engine build), the
-Minimoog/Prophet ladder's self-oscillation threshold, the ARP 2600/Odyssey
-filter's damping floor reaching true zero (the opposite design choice from
-the CS-80's own filter), panel/CC-map integrity, every real engine's voices
-actually returning to idle after release with every envelope parameter
-maxed, the voice allocator's polyphony ceiling, Prophet-5 UNISON's held-note
-handling, Master applying as linear gain (not baked into the saturator) on
-every engine, and all 15 alternate filter flavours staying finite across
-every engine that offers them (fifteen of the seventeen now — every engine
-except the CS-80 and the DX7, which has no filter of any kind), plus a
-dedicated test for OB-X's HOLD "unison chord" feature (a released chord
-transposes and replays from a single new key, repeatably — see
-`testObxHoldChordTranspose`) and one for the String Ensemble's mono bass
-coupler correctly re-targeting the next-lowest held note instead of going
-silent when the currently-sounding one releases (`testStringEnsembleBassCoupler`).
-
-The DX7 gets its own group, because it is the one engine whose DSP this
-project did not write: that every one of the **256 factory ROM voices
-actually produces sound** (the regression test for the `Env::update()` bug
-described under **Synth engines**, and the one that would catch it coming
-back), that the panel's OP1..OP6 reach the operators the DX7 calls OP1..OP6
-(Dexed indexes them in data order, which starts at OP6 — getting that
-reversal wrong edits the wrong operator and says nothing about it), that
-presets really are cartridge voices, that a released note stops and a reused
-voice slot does not strand one, that snapshot/restore brings back both the
-cartridge voice and the edits made on top of it, and that BANK's filesystem
-extension (USB DRIVE, above) reaches through cleanly via fakes standing in
-for `voicebank.cpp` — including that it stays completely unreachable, not a
-build break, anywhere those hooks are left unwired, which is the host tests'
-own default state.
-
-`tests/run.sh` builds the vendored Synth_Dexed into `tests/.dexed/` on first
-run and caches it. That build keeps AddressSanitizer but drops UBSan and the
-warning flags, for reasons the script itself sets out: MSFA's FM core is
-fixed-point DSP that deliberately relies on wrapping signed arithmetic, and
-UBSan reports it every audio block.
-The dispatch/voice-lifecycle and filter-flavour checks are written against
-`NUM_ENGINES`/`ENGINE_IS_STUB` rather than a hardcoded engine list, so every
-new engine this project has added since — most recently the MS-20, DX7,
-String Ensemble and Prophet-VS — was exercised automatically the moment it
-was wired into `engine.cpp`; only `testVariableFilterFlavours`'s own array
-(which has to know which engines expose a FILT TYPE row at all) needs each
-new one added by hand.
+**This firmware as a whole is GPLv3**, because of the DX7 engine: `Synth_Dexed`
+is Holger Wirtz' MicroDexed layer (**GPLv3**) over Google's
+*music-synthesizer-for-android* FM core (**Apache-2.0**). Both licence texts
+ship with the vendored copy. **Grobe Deutschmeister** was supplied for this
+build; its licence has not been checked here — confirm it allows embedding
+before distributing binaries.
 
 ---
 
-## Controls
+## First power-up
 
-One rotary encoder, five buttons, two performance switches and two
-performance pots. **Everything in the sequencer is reachable from the
-panel — MIDI CC is never required.**
+The title card comes up first and names each start-up stage on its status
+line — `BOOTING → DSP TABLES → EFFECTS → STORAGE → SEQUENCER → MIDI → AUDIO →
+READY` — with one heartbeat blip per stage. If start-up ever stops, the screen
+says where.
 
-The encoder replaces the old D-pad: turning it moves a cursor or changes a
-value, and its push switch stands in for the old A button (short = select,
-long = back). PLAY, PAGE, TRACK and MUTE stand in for the old
-START/SELECT/X/Y buttons. SHIFT is the modifier, held rather than pressed.
+1. **Touch calibration** runs automatically the first time (nothing is saved
+   yet): tap the three amber crosses. It is stored in NVS, not on the FAT
+   partition, so a safe boot or FORMAT FS never loses it. Redo it any time
+   from SETTINGS → TOUCH CAL.
+2. **READY (NO FS)** means the FAT partition has never been formatted: the
+   synth plays normally but cannot save. SETTINGS → FORMAT FS, with SHIFT
+   latched, then PUSH. It shows `FORMATTING FS...` and takes a while.
+3. **Boot options** — hold a finger on the screen while powering up. The menu
+   is chosen by *how long* you keep holding, not where you touch, so it works
+   even with a wrong calibration: lift during the first band for a normal
+   boot, the second for **SAFE BOOT** (skip storage, built-in defaults — the
+   way back in if a save ever wedges the box), the third to **recalibrate**.
+   Holding a wired SHIFT button at power-up is also a safe boot.
 
-| Control | Short | Long |
-|---------|-------|------|
-| **ENCODER turn** | move cursor / change value | — |
-| **ENCODER push** | select / enter-exit edit | back (on the grid: toggle step) |
-| **PLAY** | start / stop all tracks | toggle the selected step |
+There is no watchdog, deliberately, same as xtro: the audio task can starve
+core 0's idle task under full load, and a reset mid-song is worse than the
+CPU guard shedding a voice.
+
+---
+
+## The panel
+
+![Step grid](docs/screens/01_main.png)
+
+Every page has the same frame:
+
+* **Top bar** — `CARPENTER / T1 SYNTH` (active track), L/R level meters (the
+  last two segments go red near clipping), a blinking **REC** lamp while live
+  record is armed, the transport (▶ / ❚❚ / ■) and the active track's pattern.
+  The whole bar turns **amber** while that track is muted.
+* **Title box** — page name and subject (`SEQUENCER / CS BRASS`), the row
+  position (`03/13`) and the tempo, or `EXT SYNC` when slaved. Messages such
+  as `PATTERN SAVED` flash across it in amber. **Tap it to go back.**
+* **Content.**
+* **Soft keys** — PAGE, PLAY, SHIFT, TRACK, MUTE, ◀, ▶, PUSH.
+
+**Colours mean the same thing everywhere:** lime is live and primary (titles,
+the playhead, running data); amber is the cursor — solid amber means you are
+editing it now; red is record, mute or destructive.
+
+**The step grid.** Sixteen steps of the active track in two rows of eight; bar
+height is velocity, so a page reads as a loudness contour, and every fourth
+cell is a shade lighter to mark the beat. Amber double frame = cursor, lime
+frame = playhead, checkerboard bar = probability under 100 %, light cap =
+accent, lime bridge = slide, light bridge = tie, amber `x3` = ratchet, amber
+dot = parameter lock, small ticks = chord notes, dotted frame = past the
+pattern's length. Page dots under the grid show which 16 of the 64 you are on.
+
+**Lists** — the row marked `>` is selected; push to edit and the value turns
+solid amber while the marker becomes a blinking block. Ranges get a segment
+bar instead of a dotted leader. **PATTERN** shows one card per pattern with a
+map of its steps; **CHAIN** is a strip of film with a frame per slot (the one
+playing is outlined in lime) and APPLY / LOAD SONG / SAVE SONG buttons;
+**MIXER** has a strip per track with an activity lamp, a density ladder and a
+mute key; **PERF** graphs the audio core's load over the last 16 s.
+
+**SETTINGS** adds three panel rows: **BACKLIGHT**, **CRT LINES** (the
+scanline effect — turn it off if the picture looks dim or striped) and
+**PHOSPHOR**: GREEN (the NightShift reference), AMBER, or BLOOD.
+
+### Touch
+
+| Touch | Does |
+|---|---|
+| Tap a row / step / card / frame / strip | put the cursor on it |
+| Tap what is already under the cursor | PUSH (open, or start/stop editing) |
+| Drag up / down anywhere in the content | turn the encoder (one click per 14 px) |
+| Hold a step on the grid | switch it on/off |
+| Tap the title box | back (same as PAGE) |
+| MENU items, SYNTH pages, CHAIN buttons | act on the first tap |
+
+### Soft keys
+
+Same short/long-press behaviour as the xtro board's buttons:
+
+| Key | Press | Hold |
+|---|---|---|
 | **PAGE** | menu / back | **save everything** |
-| **TRACK** | next track (in STEP EDIT: next step) | copy pattern to clipboard |
-| **MUTE** | toggle the selected step | paste clipboard into this pattern |
-| **SHIFT** | modifier (hold) | — |
-| **OCT DOWN / OCT UP** | transpose an external MIDI keyboard -3..+3 octaves | — |
-| **CUTOFF / RESONANCE pots** | live filter cutoff/resonance on the current engine | — |
+| **PLAY** | start / stop all tracks (in STEP EDIT: play the step) | toggle the step (grid) / stop everything |
+| **SHIFT** | latches until the next action | — |
+| **TRACK** | next track (in STEP EDIT: next step) | copy the pattern |
+| **MUTE** | toggle the selected step | paste the clipboard |
+| **◀ / ▶** | one encoder click; repeats while held | — |
+| **PUSH** | encoder push | back |
 
-### SHIFT (hold) combinations
-| Combination | Action |
-|-------------|--------|
-| SHIFT + turn (grid) | change BPM |
-| SHIFT + turn (lists) | move / adjust ×8 |
-| SHIFT + turn (CHAIN) | edit the repeat count |
-| SHIFT + turn (TOOLS, Riff row) | change riff category |
-| SHIFT + turn (name editor) | move the caret |
-| SHIFT + PLAY | arm / disarm live record |
-| SHIFT + MUTE | mute / unmute the current track |
-| SHIFT + TRACK | next pattern |
-| SHIFT + push (PRESETS) | save the current patch to a user slot |
-| SHIFT + push (SONG BROWSE) | delete the song in this slot |
-| SHIFT + TRACK (STEP EDIT) | previous step |
+![SHIFT latched](docs/screens/21_shift.png)
 
-There is a **HELP** page in the menu with the same summary on the device.
+A resistive panel only reports one finger, so **SHIFT latches** instead of
+being held: tap it (it turns amber and the other keys show their shifted
+function in amber — PLAY→REC, TRACK→PAT+, MUTE→M.TRK, ◀▶ ×8), then do the
+shifted action. It releases after any shifted key or push, but **stays on
+through drags and ◀ ▶**, so SHIFT+turn (BPM on the grid, ×8 steps, the name
+caret, chain repeats, riff category) works as one gesture. Tap SHIFT again to
+drop it.
 
-### Main grid
+| With SHIFT | Action |
+|---|---|
+| drag / ◀ ▶ on the grid | tempo |
+| drag / ◀ ▶ in lists | move / adjust ×8 |
+| drag on a chain frame | repeat count |
+| drag on the riff row | riff category |
+| drag in the name editor | move the caret |
+| PLAY | arm / disarm live record |
+| MUTE | mute / unmute the track |
+| TRACK | next pattern (in STEP EDIT: previous step) |
+| PUSH in PRESETS | save to the user slot |
+| PUSH in SONGS | delete that song |
+| PUSH on FORMAT FS | format |
 
-Two rows of eight cells show one 16-step page. Bar height inside a cell is the
-step's velocity, so a page reads as a dynamics contour. Corner squares mark
-accent (top-left), slide (top-right), ratchet (bottom-right) and parameter
-locks (bottom-left). The playhead fills its cell solid (inverted); the
-cursor is an outlined frame around it.
-
-### Hardware controls
-
-**OCT DOWN / OCT UP** (GP2/GP3) transpose incoming MIDI performance notes by
-an octave at a time (-3..+3), independent of the sequencer's own patterns,
-which are left untouched. Only heard when **Kbd Play** (MIDI SET page) is on
-— same gate the un-transposed notes already went through.
-
-**CUTOFF / RESONANCE pots** on GP26/GP27, continuously read and applied
-directly, the same as a real analogue synth's non-motorized panel: turning
-the knob always wins, including over a recalled preset's stored value. They
-reach whichever engine is currently live, through
-`engineFilterCutoffParamId()`/`engineFilterResonanceParamId()` (`engine.h`):
-each engine's own CUTOFF/RESONANCE parameters (Minimoog calls its own
-"Emphasis", matching the real panel) on every engine but the CS-80, whose
-architecture has no single cutoff knob — there it's Brilliance (the global
-offset that opens both channels' filters together) and Resonance, exactly
-as the single-engine CS-80 build's own hardware pots already used them. The
-MS-20 has two independently resonant sections in series, so the pots drive
-its **lowpass** — the one whose PEAK is the sound the instrument is known
-for.
-
-The one engine where both pots are **inert** is the **DX7**: an FM engine
-has no filter at all, and nothing else on its panel is a filter in
-disguise. The dispatch returns `ENGINE_PARAM_NONE` (`param_types.h`) there
-and the sketch skips the write, rather than falling back to "parameter 0" —
-which is a real, writable parameter on every engine (`DX_OP1_RATIO` here),
-so a knob labelled CUTOFF would otherwise have been quietly re-tuning an
-operator.
+**Keyboard octave** — MIDI → **KBD OCTAVE** transposes an external MIDI
+keyboard by octaves (−3..+3), leaving the sequencer's patterns alone. The
+optional OCT DOWN / OCT UP buttons do the same; OCT DOWN is the dev board's
+own BOOT button, so it works with nothing wired (just don't hold it while
+powering up: that is the ROM's download mode).
 
 ---
 
@@ -385,7 +314,7 @@ operator.
 
 Four independent 64-step lanes. **Track 1 plays the internal synth** and echoes
 to MIDI OUT; **tracks 2–4 are MIDI-only lanes** for outboard gear, each on its
-own channel — that is what the GP1 MIDI OUT is for.
+own channel — that is what the DIN MIDI OUT is for.
 
 ### Per step
 | Field | Range | Notes |
@@ -460,7 +389,7 @@ using it is fixed), not a bug, but it does mean a song is not a self-contained
 archive of exactly how it sounded when saved, if patterns keep getting edited
 afterward.
 
-SHIFT+A on a song slot deletes it.
+SHIFT + PUSH on a song slot deletes it.
 
 ### Sync
 - **Internal**, with MIDI clock out (24 PPQN, plus start/stop/continue) from track 1 only.
@@ -473,8 +402,8 @@ SHIFT+PLAY arms it. Notes from MIDI IN land on the nearest step; past the
 halfway point they go to the step you are heading into.
 
 ### Metronome
-A 6 ms gate pulse on GP14 at the top of each beat — drives an LED or a click
-input without touching the audio path.
+A 6 ms gate pulse on the click output (GPIO 43, `PIN_CLICK_OUT`) at the top of
+each beat — drives an LED or a click input without touching the audio path.
 
 ---
 
@@ -799,7 +728,8 @@ garbage; the same "keep the current sound" rule covers a cartridge whose file
 was deleted after a preset was saved pointing at it.
 
 Polyphony is 8, against the real machine's 16: Dexed's per-note cost on
-RP2350 is the binding constraint. The CPU guard lowers it further under load
+RP2350 was the binding constraint on the xtro board, and the S3 is untested
+at full load (see Status). The CPU guard lowers it further under load
 like any other engine. There is no filter, deliberately — the real DX7
 doesn't have one either, which is also why the front-panel CUTOFF/RESONANCE
 pots are inert on this engine (see **Hardware controls**). See
@@ -892,7 +822,7 @@ real instrument, not a revival of that old UI.
 
 ---
 
-## Optimisation notes
+## Optimisation notes (from the xtro build)
 
 These principles were true of the original single-engine build and remain
 true of `dsp_tables.cpp`/`fx.cpp` (shared by every engine) and of each
@@ -920,7 +850,7 @@ queue — is a power of two, so wrapping is one `AND`.
 **Parameters are snapshotted per block**, not read as volatiles inside the sample
 loop.
 
-**Automatic overload guard.** Core1 measures its own render time. Above 90 % it
+**Automatic overload guard.** The audio task measures its own render time. Above 90 % it
 sheds a voice; below 65 % it takes one back — down to the CS-80's floor of 1
 voice, since a 1-voice engine (Minimoog) needs to be able to shed to exactly
 that. Clicks are worse than a stolen voice. The PERF page shows measured CPU,
@@ -1031,57 +961,52 @@ every sounding step always has an audible velocity.
 
 ---
 
+---
+
 ## Storage
 
-FatFS on the 16 MB part (not LittleFS, so the partition can also be exported
-over USB — see below). Patterns are stored per track, settings (including
-which engine was live and its live patch) in `/settings.bin`, user presets in
-`/presets/` — namespaced by engine in the filename (`e<id>_u<slot>.bin`),
-since a preset is only meaningful for the engine it was saved under — songs
-in `/songs/` (200 slots, ~90 bytes each — see Songs, above), and DX7 voice
-cartridges in `/banks/` (see below).
+FAT on the ESP32-S3's flash (arduino-esp32's **FFat**, on the 9.9 MB `ffat`
+partition — not LittleFS, so the partition can also be exported over USB).
+The layout is xtro's unchanged: patterns per track in `/patterns/`, settings
+(including which engine was live and its patch) in `/settings.bin`, user
+presets in `/presets/` namespaced by engine (`e<id>_u<slot>.bin`), songs in
+`/songs/` (200 slots), DX7 cartridges in `/banks/`. `STORAGE_VERSION` is 7
+here (the settings gained the panel's PHOSPHOR and CRT LINES), so files from
+an xtro board are rejected rather than misread — same policy as every bump.
 
-`PAGE` long-press saves everything (and says so if there is no filesystem to
-save to). `Storage::begin()` mounts but never formats — formatting an 8 MB FAT
-partition takes far longer than a boot sequence should, so it is an explicit,
-on-screen action under SETTINGS instead. Flash erases stall the XIP cache, so core0
-parks the audio core in an SRAM-resident spin at a clean block boundary around
-every write — audio pauses briefly during a save rather than glitching mid-block.
+Hold **PAGE** to save everything. `Storage::begin()` mounts but never formats;
+formatting is the explicit, on-screen SETTINGS → FORMAT FS. A flash write
+disables the S3's cache on both cores, so the audio task parks itself at a
+clean block boundary around every write: audio pauses briefly during a save
+rather than glitching mid-block.
 
 ### USB DRIVE — drag-and-drop DX7 voice banks
 
-SETTINGS → **USB DRIVE** exports the whole FS partition to a computer as a
-plain USB memory stick (`FatFSUSB`, part of the arduino-pico core — see
-**Building**'s USB Stack requirement). Drop standard DX7 `.syx` cartridge
-dumps into `/banks` — 32-voice files, either the usual SysEx-wrapped 4104-byte
-export or a raw 4096-byte voice dump — eject on the computer, then press
-`PAGE`. The new banks appear on the DX7 engine's BANK row immediately after,
-right past the 8 factory ROM ones (`MAX_FS_BANKS` in `config.h`, 64 by
-default → up to 2048 extra voices). See **Yamaha DX7** under *Synth engines*
-for how they're addressed.
+SETTINGS → **USB DRIVE** (needs Tools → USB Mode → USB-OTG) stops the
+transport, silences the engine, and hands the FAT partition to the computer on
+the USB cable as a plain memory stick. Drop DX7 `.syx` cartridges (32 voices,
+4104-byte SysEx or 4096-byte raw) into `/banks`, eject on the computer, press
+**PAGE**, and they appear on the DX7's BANK row after the 8 ROM banks (up to
+`MAX_FS_BANKS`, 64 → 2048 extra voices).
 
-Entering USB DRIVE is deliberate and exclusive, not automatic: it stops every
-track and silences the engine first, because once a computer has the drive
-mounted it can erase or program flash at any moment, and a flash write stalls
-instruction fetch for whichever core is running from it — the audio core.
-Nothing about the *filesystem itself* being mounted requires this, though: if
-a computer auto-mounts the drive incidentally (plugged in only for power or
-the serial monitor, which many OSes do without being asked), playback
-continues exactly as before — every filesystem access anywhere in this
-firmware already refuses to run while the host owns it, so nothing needs
-protecting beyond that. Only the deliberate, on-screen SETTINGS entry point
-stops the transport.
+How it works on the S3: FFat keeps its wear-levelling handle private, so the
+sketch unmounts FFat and mounts the same partition's wear-levelling layer
+itself (the IDF's `wl_*` API), serving the host 4 KB sectors — exactly the
+sectors FFat uses. On eject (or PAGE) it unmounts that and FFat mounts the
+partition again. While the computer has the drive, every filesystem access in
+the firmware refuses to run (`g_diskMode`); the sequencer keeps going.
 
 ---
 
 ## MIDI
 
-- **OUT on GP1**, IN on GP0, 31250 baud, via PIO UART.
+- **DIN IN on GPIO 18, OUT on GPIO 17**, 31250 baud, on the S3's UART1.
 - Note on/off, CC, program change (loads that engine's factory preset), pitch
   bend, polyphonic + channel aftertouch, and 24-PPQN clock with
   start/stop/continue, in and out.
 - Input channel filter (omni or 1–16), soft thru, a **Kbd Play** on/off
-  switch, and a PANIC entry on the MIDI page.
+  switch, a **KBD OCTAVE** transpose for an external keyboard, and a PANIC entry
+  on the MIDI page.
 - **An external MIDI keyboard on MIDI IN plays the internal synth engine
   live** — "Local Control" in conventional synth terms — whatever engine is
   currently selected, independent of the sequencer's transport or record-arm
@@ -1120,9 +1045,8 @@ Each engine defines its own parameters and CC numbers in its own source file
 `ppgwave.cpp`, `ms20.cpp`, `dx7.cpp`, `stringens.cpp`, `prophetvs.cpp`) —
 there is no longer one fixed CC table shared by every sound, since a
 Minimoog has a completely different panel from a CS-80.
-To find a given engine's exact CC numbers: switch to it, open a SYNTH page,
-and each parameter's row is exactly what CC drives it (or read that engine's
-own `PARAM_INFO[]` table in source). Every engine's last 8 parameters are
+To find a given engine's exact CC numbers, read that engine's own
+`PARAM_INFO[]` table in source (the `cc` column). Every engine's last 8 parameters are
 the same arpeggiator tail (ENABLE, PATTERN, RATE, GATE, OCTAVES, DIR, LATCH,
 SYNC, in that order — see `ARP_TAIL_COUNT` in `engine.h`), so the arp CCs
 are the same shape on every engine even though their exact numbers can
@@ -1130,17 +1054,60 @@ differ.
 
 ---
 
+
+USB MIDI is not implemented: the native USB port carries Serial and the USB
+drive. (arduino-esp32 has a class-compliant `USBMIDI` that could be added
+alongside them.)
+
+---
+
+## Tools
+
+* **`tests/run.sh`** — builds and runs every engine's DSP, the effects, the
+  sequencer and the DX7 ROM checks natively under ASan + UBSan. Unchanged from
+  xtro apart from host-side shims; all tests pass on this port.
+* **`tests/build_s3.sh`** — compiles the whole sketch with arduino-cli for the
+  ESP32-S3 in the three board configurations that change what is compiled
+  (USB-OTG + PSRAM, Hardware CDC + PSRAM, no PSRAM).
+* **`tools/preview/build.sh`** — links the real `ui.cpp`, `gfx.cpp`, the
+  sequencer and all seventeen engines on a PC, drives each screen into place
+  through the same input events the touchscreen and buttons use, and writes
+  what would have been sent to the ILI9341 to `tools/preview/out/*.png`. The
+  screenshots in this README are its output. Needs g++, Python 3 + Pillow;
+  fetches U8g2's C sources on first run.
+* **`tools/ttf_to_xbm.py`** — renders fixed strings from a TTF into XBM
+  bitmaps; `splash_wordmark.h`'s banner has the exact command used for the
+  Grobe Deutschmeister title and byline.
+
+### How the panel is drawn
+
+`gfx.h` is a 16-colour, 4-bit-per-pixel 320×240 canvas (38 KB). Text and line
+primitives are not reimplemented: U8g2's C core is set up as a 320×240
+"display" whose low-level line callback writes into the canvas in the current
+palette colour, so every `u8g2_font_*` bitmap font is available with no second
+font engine. Each frame the whole UI is redrawn into the canvas, and
+`flush()` hashes each 8-row band and only sends the bands that changed — a
+moving playhead costs two or three bands of SPI traffic, a still page none.
+The CRT effect is applied at that point too: odd rows go out at 76 % of the
+colour, the exact ratio between each lit colour and its scanline partner on
+the NightShift reference screens.
+
+---
+
 ## Troubleshooting
 
 | Problem | Check |
-|---------|-------|
-| No display | SDA/SCL on GP4/GP5, address `0x3C`; confirm the U8g2 library is installed |
-| No audio | PCM5102 XSMT → 3V3, SCK → GND, BCK on GP15 (LRCK *must* be GP16) |
-| No MIDI out | 220R in series on GP1; confirm `MIDI_USE_PIO_UART` is 1 |
-| Clicks / dropouts | Check the PERF page — if CPU is pinned, lower `MAX_VOICES` in `config.h` |
-| Encoder skips steps or runs backwards | Retune `ENC_TICKS_PER_DETENT` in `config.h`, or swap ENC A/ENC B (GP6/GP7) |
-| Pots feel twitchy | Retune `POT_DEADBAND` in `config.h` |
-| Nothing saves | Tools → Flash Size must reserve an FS partition, then SETTINGS → FORMAT FS (hold SHIFT) |
-| Blank screen | CPU Speed → 150 MHz, Board → Generic RP2350, or hold SHIFT at power-up for safe boot |
-| Stuck on one boot stage | The stage named on screen is where it stopped — see "First flash" above |
-| Sequencer drifts against external gear | Turn Ext Sync on, or Clock Out on — not both |
+|---|---|
+| Blank / white screen | TFT wiring (SCK 12, MOSI 11, CS 10, DC 9, RST 14, LED 21); some modules need `TFT_INVERT 1` in `config.h` |
+| Picture upside down | `TFT_MADCTL` in `config.h`: `0xE8` ↔ `0x28` (then redo TOUCH CAL) |
+| Red and blue swapped | clear the `0x08` bit in `TFT_MADCTL` |
+| Touch lands in the wrong place | SETTINGS → TOUCH CAL, or hold the screen at power-up and lift on TOUCH CALIBRATION |
+| Touch does nothing | T_CLK 15, T_DIN 16, T_DO 47, T_CS 8; raise or lower `TOUCH_Z_MIN` |
+| `NO PSRAM - SEE README` | the module has no PSRAM, or Tools → PSRAM isn't **OPI PSRAM** |
+| No audio | PCM5102A XSMT → 3V3, SCK → GND; BCK 5, LRCK 4, DIN 6 |
+| Clicks / dropouts | MENU → PERF: if CPU sits near 100 % or AUDIO XRUNS climbs, the engine is too heavy at that polyphony — lower `MAX_VOICES` in `config.h` |
+| Nothing saves / `READY (NO FS)` | Partition Scheme must be **16M Flash (3MB APP/9.9MB FATFS)**, then SETTINGS → FORMAT FS with SHIFT |
+| USB DRIVE says OTG ONLY | Tools → USB Mode → **USB-OTG (TinyUSB)** |
+| Stuck on one boot stage | the stage named on screen is where it stopped; try a safe boot |
+| Encoder runs backwards | swap ENC A / ENC B in `config.h` |
+| Sequencer drifts against external gear | Ext Sync on, or Clock Out on — not both |

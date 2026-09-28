@@ -1,29 +1,14 @@
 #include "midi.h"
 
-#if MIDI_USE_PIO_UART
-  #include <SerialPIO.h>
-  // TX = GP1 (the MIDI OUT jack), RX = GP0.  Set PIN_MIDI_RX to -1 in config.h
-  // to give GP0 back — the port then transmits only.
-  #if PIN_MIDI_RX >= 0
-    static SerialPIO midiPort(PIN_MIDI_TX, PIN_MIDI_RX, 64);
-  #else
-    static SerialPIO midiPort(PIN_MIDI_TX, SerialPIO::NOPIN, 64);
-  #endif
-  #define MIDI_PORT midiPort
-#else
-  #define MIDI_PORT Serial1
-#endif
+// DIN MIDI on the S3's UART1, routed to any pins through the GPIO matrix
+// (IN on PIN_MIDI_RX via the 6N138, OUT on PIN_MIDI_TX). A bigger RX buffer
+// than the default rides out a burst of clock + notes arriving while the UI
+// is mid-redraw.
+#define MIDI_PORT Serial1
 
 void MidiIO::begin() {
-#if MIDI_USE_PIO_UART
-    MIDI_PORT.begin(MIDI_BAUD, SERIAL_8N1);
-#else
-    Serial1.setTX(PIN_MIDI_TX);
-  #if PIN_MIDI_RX >= 0
-    Serial1.setRX(PIN_MIDI_RX);
-  #endif
-    Serial1.begin(MIDI_BAUD, SERIAL_8N1);
-#endif
+    MIDI_PORT.setRxBufferSize(512);
+    MIDI_PORT.begin(MIDI_BAUD, SERIAL_8N1, PIN_MIDI_RX, PIN_MIDI_TX);
 }
 
 // ─── Transmit ───────────────────────────────────────────────────────────────
@@ -78,7 +63,6 @@ void MidiIO::continueMsg() { write1(MIDI_RT_CONTINUE); }
 
 // ─── Receive ────────────────────────────────────────────────────────────────
 void MidiIO::poll() {
-#if PIN_MIDI_RX >= 0
     // Bounded per call so a flood of clock bytes can never starve the UI loop.
     for (int guard = 0; guard < 64 && MIDI_PORT.available(); guard++) {
         uint8_t b = (uint8_t)MIDI_PORT.read();
@@ -104,7 +88,6 @@ void MidiIO::poll() {
             dispatch();
         }
     }
-#endif
 }
 
 void MidiIO::dispatch() {

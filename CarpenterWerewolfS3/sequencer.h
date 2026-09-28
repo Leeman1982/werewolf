@@ -185,6 +185,7 @@ public:
     bool isChaining() const { return _chainLen > 0; }
     const ChainEntry* chain() const { return _chain; }
     uint8_t chainLen() const { return _chainLen; }
+    uint8_t chainPos() const { return _chainPos; }   // slot playing now (film-strip highlight)
 
     // ── Live record ────────────────────────────────────────────────────────
     // Notes arriving while armed are written into the step nearest the

@@ -3,13 +3,9 @@
 #include "config.h"
 
 // ============================================================================
-//  midi.h — MIDI OUT on GP1, MIDI IN on GP0.
-//
-//  GP1 cannot be a hardware UART TX on RP2350 (UART0 TX is only available on
-//  GP0/12/16/28), so this uses arduino-pico's SerialPIO: a UART synthesised in
-//  a PIO state machine, which can drive any GPIO with exact 31250-baud timing.
-//  Everything above the transport is plain byte pushing, so switching back to
-//  the hardware UART is a single #define in config.h.
+//  midi.h — DIN MIDI IN and OUT on the ESP32-S3's UART1 (pins in config.h).
+//  Everything above the transport is plain byte pushing, identical to the
+//  xtro build, which drove the same parser from a PIO UART.
 // ============================================================================
 
 // Real-time status bytes

@@ -5,18 +5,17 @@
 #include "engine.h"
 
 // ============================================================================
-//  storage.h — FatFS-backed persistence on the 16 MB part.
+//  storage.h — FAT-backed persistence (arduino-esp32 FFat) on the 16 MB part.
 //
-//  FatFS rather than LittleFS so the same partition can be exported to a host
+//  FAT rather than LittleFS so the same partition can be exported to a host
 //  over USB mass storage, which is how patterns and user patches get off the
-//  box.  Pick a Tools -> Flash Size layout that reserves an FS partition
-//  (e.g. 8 MB sketch / 8 MB FS).
+//  box.  Pick Tools -> Partition Scheme "16M Flash (3MB APP/9.9MB FATFS)".
 // ============================================================================
 
-// Implemented in the sketch.  On RP2350 a flash erase stalls the XIP cache, so
-// the audio core must not be fetching instructions from flash while core0
-// writes.  These park core1 in a RAM-resident spin at a clean block boundary
-// instead of letting it be frozen mid-render.
+// Implemented in the sketch.  A flash erase disables the ESP32-S3's cache on
+// both cores, so the audio task stalls for its duration regardless; these
+// park it at a clean block boundary first instead of letting it be frozen
+// mid-render.
 void audioFlashBegin();
 void audioFlashEnd();
 
@@ -48,6 +47,10 @@ struct GlobalSettings {
     uint8_t  chainLen[NUM_TRACKS] {};
     ChainEntry chain[NUM_TRACKS][CHAIN_LEN] {};
     uint8_t  defaultTimeSigIdx = 0;   // TIME_SIGS index new/cleared patterns start on
+    // Werewolf S3 panel look (SETTINGS -> PHOSPHOR / CRT LINES). `contrast`
+    // above doubles as the TFT backlight level.
+    uint8_t  phosphor      = 0;       // Phosphor (ui.h): GREEN / AMBER / BLOOD
+    uint8_t  crtLines      = 1;       // odd-row scanline dimming on/off
 };
 
 // One preset is only meaningful for the engine it was saved under — hence

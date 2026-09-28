@@ -1,39 +1,49 @@
 #include "controls.h"
 #include <math.h>
+#include "soc/gpio_reg.h"
 
 // ─── RotaryEncoder ──────────────────────────────────────────────────────────
-// arduino-pico ISRs are void(*)() with no argument; use a static instance ptr.
+// One ISR shared by both encoder pins; attachInterrupt() takes no argument,
+// hence the static instance pointer.
 static RotaryEncoder* _encInstance = nullptr;
+static int8_t s_encA = -1, s_encB = -1;
 
-RotaryEncoder::RotaryEncoder(uint8_t pinA, uint8_t pinB, uint8_t pinSW)
+// Read a GPIO straight from the input registers. The ISR must be IRAM-safe
+// (it can fire while a flash write has the cache disabled), and
+// digitalRead() is not guaranteed to be in IRAM; a register read is.
+static inline IRAM_ATTR uint8_t fastRead(int8_t pin) {
+    if (pin < 32) return (uint8_t)((REG_READ(GPIO_IN_REG) >> pin) & 1);
+    return (uint8_t)((REG_READ(GPIO_IN1_REG) >> (pin - 32)) & 1);
+}
+
+RotaryEncoder::RotaryEncoder(int8_t pinA, int8_t pinB, int8_t pinSW)
     : _pinA(pinA), _pinB(pinB), _pinSW(pinSW) {}
 
 void RotaryEncoder::begin() {
     _encInstance = this;
+    s_encA = _pinA; s_encB = _pinB;
+    if (_pinSW >= 0) pinMode(_pinSW, INPUT_PULLUP);
+    if (_pinA < 0 || _pinB < 0) return;
     pinMode(_pinA, INPUT_PULLUP);
     pinMode(_pinB, INPUT_PULLUP);
-    pinMode(_pinSW, INPUT_PULLUP);
-    _last = (digitalRead(_pinA) << 1) | digitalRead(_pinB);
-    attachInterrupt(digitalPinToInterrupt(_pinA), isrA, CHANGE);
-    attachInterrupt(digitalPinToInterrupt(_pinB), isrB, CHANGE);
+    _last = (uint8_t)((fastRead(_pinA) << 1) | fastRead(_pinB));
+    attachInterrupt(digitalPinToInterrupt(_pinA), isr, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(_pinB), isr, CHANGE);
 }
 
-void RotaryEncoder::isrA() {
+void IRAM_ATTR RotaryEncoder::isr() {
     RotaryEncoder* e = _encInstance;
     if (!e) return;
-    uint8_t a = digitalRead(e->_pinA);
-    uint8_t b = digitalRead(e->_pinB);
-    uint8_t s = (a << 1) | b;
+    uint8_t s = (uint8_t)((fastRead(s_encA) << 1) | fastRead(s_encB));
     if (s != e->_last) {
         if ((e->_last == 0b11 && s == 0b01) || (e->_last == 0b01 && s == 0b00) ||
             (e->_last == 0b00 && s == 0b10) || (e->_last == 0b10 && s == 0b11))
-            e->_count++;
+            e->_count = e->_count + 1;
         else
-            e->_count--;
+            e->_count = e->_count - 1;
         e->_last = s;
     }
 }
-void RotaryEncoder::isrB() { isrA(); }
 
 int RotaryEncoder::getDelta() {
     noInterrupts();
@@ -44,6 +54,7 @@ int RotaryEncoder::getDelta() {
 }
 
 void RotaryEncoder::update() {
+    if (_pinSW < 0) return;
     bool raw = (digitalRead(_pinSW) == LOW);
     unsigned long now = millis();
     if (raw != _swRaw) { _swDebounceT = now; _swRaw = raw; }
@@ -64,11 +75,15 @@ bool RotaryEncoder::wasLongPress() { if (_longFlag)    { _longFlag = false;    r
 bool RotaryEncoder::isHeld()       { return _swState; }
 
 // ─── Button ─────────────────────────────────────────────────────────────────
-Button::Button(uint8_t pin, bool activeLow) : _pin(pin), _activeLow(activeLow) {}
+Button::Button(int8_t pin, bool activeLow) : _pin(pin), _activeLow(activeLow) {}
 
-void Button::begin() { pinMode(_pin, _activeLow ? INPUT_PULLUP : INPUT_PULLDOWN); }
+void Button::begin() {
+    if (_pin < 0) return;
+    pinMode(_pin, _activeLow ? INPUT_PULLUP : INPUT_PULLDOWN);
+}
 
 void Button::update() {
+    if (_pin < 0) return;
     uint8_t raw = digitalRead(_pin);
     bool active = _activeLow ? (raw == LOW) : (raw == HIGH);
     unsigned long now = millis();
@@ -94,15 +109,17 @@ bool Button::wasLongPress() {
 }
 
 // ─── Pot ────────────────────────────────────────────────────────────────────
-Pot::Pot(uint8_t pin) : _pin(pin) {}
+Pot::Pot(int8_t pin) : _pin(pin) {}
 
 void Pot::begin() {
+    if (!POTS_FITTED || _pin < 0) return;
     pinMode(_pin, INPUT);
     _smoothed = (float)analogRead(_pin) / POT_ADC_MAX;
     _lastReported = _smoothed;
 }
 
 void Pot::update() {
+    if (!POTS_FITTED || _pin < 0) return;
     float raw = (float)analogRead(_pin) / POT_ADC_MAX;
     // One-pole smoothing tames ADC noise without adding audible lag to a
     // knob sweep.
@@ -110,6 +127,7 @@ void Pot::update() {
 }
 
 bool Pot::changed() {
+    if (!POTS_FITTED || _pin < 0) return false;
     if (fabsf(_smoothed - _lastReported) > POT_DEADBAND) {
         _lastReported = _smoothed;
         return true;
@@ -126,7 +144,7 @@ Controls::Controls()
       cutoffPot(PIN_POT_CUTOFF), resonancePot(PIN_POT_RESONANCE) {}
 
 void Controls::begin() {
-    analogReadResolution(POT_ADC_BITS);
+    if (POTS_FITTED) analogReadResolution(POT_ADC_BITS);
     encoder.begin();
     play.begin(); shift.begin(); page.begin(); track.begin(); mute.begin();
     octDown.begin(); octUp.begin();
