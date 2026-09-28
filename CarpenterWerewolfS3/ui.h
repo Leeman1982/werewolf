@@ -72,7 +72,7 @@ enum class SetRow : uint8_t {
 };
 
 // Colour schemes for the whole panel. GREEN is the NightShift reference.
-enum Phosphor : uint8_t { PHOS_GREEN = 0, PHOS_AMBER, PHOS_BLOOD, NUM_PHOSPHORS };
+enum Phosphor : uint8_t { PHOS_GREEN = 0, PHOS_AMBER, PHOS_BLOOD, PHOS_MICRO, NUM_PHOSPHORS };
 
 // Soft keys along the bottom edge, left to right.
 enum SoftKey : uint8_t {
@@ -90,7 +90,7 @@ public:
     void bootStatus(const char* msg);
     void bind(Sequencer* seqs, uint8_t* activeTrack, Storage* storage, GlobalSettings* gs);
     void applyContrast(uint8_t c);           // backlight, 0..255 (floored)
-    void applyLook(uint8_t phosphor, bool crt);
+    void applyLook(uint8_t phosphor, uint8_t crtMode);   // crtMode: gfx::Canvas::Crt
 
     void update();                 // throttled redraw
     void markDirty() { _dirty = true; }
@@ -184,6 +184,22 @@ private:
     unsigned long _cpuHistT = 0;
 
     uint8_t       _bootStage = 0;
+    // The boot console: the last few stages, printed like a micro loading
+    // from tape.
+    static constexpr int BOOT_LOG = 4;
+    char          _bootLog[BOOT_LOG][24] = {};
+
+    // SYNTH_EDIT graphs: envelopes found by parameter name, and the filter.
+    struct EnvGroup { char label[10]; int8_t a, d, s, r; };   // page-relative rows, -1 = absent
+    int  findEnvGroups(EnvGroup* out, int max) const;
+    bool pageHasFilterGraph() const;
+    bool synthHasGraph() const;
+    int  listY() const;                // top of the first list row
+    void drawSynthGraphs();
+    void drawEnvGraph(const EnvGroup& g, int x, int y, int w, int h);
+    void drawFilterGraph(int x, int y, int w, int h);
+    void drawScope(int x, int y, int w, int h, uint8_t c);
+    void drawMenuIcon(int item, int x, int y, uint8_t c);
 
     // ── Helpers ────────────────────────────────────────────────────────────
     int  rowCount() const;

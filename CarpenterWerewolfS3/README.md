@@ -18,9 +18,12 @@ parser and every UI action. What is new here:
   hand-written ILI9341 + XPT2046 driver (no display library, no
   `User_Setup.h`).
 * **The panel** — a native 320×240 colour UI in the visual language of the
-  *NightShift* owner's manual: lime for live data and the playhead, amber for
-  the cursor and anything being edited, red for record/mute/destructive,
-  CRT scanlines, and the same frame on every page. It replaces the xtro
+  *NightShift* owner's manual (lime for live data and the playhead, amber for
+  the cursor and anything being edited, red for record/mute/destructive, the
+  same frame on every page), dressed as a worn early-80s home computer: the
+  Amstrad CPC's 8×8 ROM font with pixel-doubled titles, a CRT tube (scanlines,
+  vignette, rounded glass), vector line art with phosphor glow, ordered-dither
+  "crushed" shading, rubber keycaps and the four-stripe case badge. It replaces the xtro
   build's 128×64 OLED screens; the 80s-horror OLED redesign on
   `claude/ui-redesign-80s-horror` was only ever design renders, and it does
   not translate to a colour panel four times the size.
@@ -36,7 +39,8 @@ parser and every UI action. What is new here:
 |---|---|
 | ![Step grid](docs/screens/01_main.png) | ![Menu](docs/screens/03_menu.png) |
 | ![Step edit](docs/screens/05_step_edit_editing.png) | ![Patterns](docs/screens/06_patterns.png) |
-| ![Chain](docs/screens/07_chain.png) | ![Synth edit](docs/screens/11_synth_edit.png) |
+| ![Chain](docs/screens/07_chain.png) | ![Envelopes](docs/screens/26_synth_envelopes.png) |
+| ![Filter](docs/screens/26_synth_filter.png) | ![MICRO phosphor](docs/screens/24_main_micro.png) |
 | ![Mixer](docs/screens/13_mixer.png) | ![System monitor](docs/screens/16_perf.png) |
 | ![Settings](docs/screens/15_settings.png) | ![Amber phosphor](docs/screens/22_main_amber.png) |
 
@@ -249,9 +253,23 @@ playing is outlined in lime) and APPLY / LOAD SONG / SAVE SONG buttons;
 **MIXER** has a strip per track with an activity lamp, a density ladder and a
 mute key; **PERF** graphs the audio core's load over the last 16 s.
 
-**SETTINGS** adds three panel rows: **BACKLIGHT**, **CRT LINES** (the
-scanline effect — turn it off if the picture looks dim or striped) and
-**PHOSPHOR**: GREEN (the NightShift reference), AMBER, or BLOOD.
+**Vector graphics.** Line art is drawn with a one-pixel phosphor halo, like
+a vector display's beam: the thirteen menu icons, a live **oscilloscope** of
+the synth's output on the step-grid page (triggered on a rising zero
+crossing so a held note stands still), the PERF load trace, and on SYNTH
+pages two kinds of graph found automatically from the engine's own
+parameter names — an **ADSR envelope** for every `<x> ATK / DEC / SUS / REL`
+group on the page (the stage under the cursor in amber; CS-80 channel pages
+get both VCA and VCF), and a **filter response curve** on any page holding
+the engine's cutoff. The curve is a picture of the two knobs, not a
+measurement of that engine's circuit. The boot screen is a vector landscape
+— ridge, perspective grid, a wireframe full moon — over a console that
+prints each start-up stage like a program loading from tape.
+
+**SETTINGS** adds three panel rows: **BACKLIGHT**; **CRT** — OFF, LINES
+(scanlines) or TUBE (scanlines, vignette and rounded corners; the default);
+and **PHOSPHOR** — GREEN (the NightShift reference), AMBER, BLOOD, or MICRO
+(blue glass, cyan and yellow, like an early-80s home computer).
 
 ### Touch
 
@@ -971,7 +989,7 @@ The layout is xtro's unchanged: patterns per track in `/patterns/`, settings
 (including which engine was live and its patch) in `/settings.bin`, user
 presets in `/presets/` namespaced by engine (`e<id>_u<slot>.bin`), songs in
 `/songs/` (200 slots), DX7 cartridges in `/banks/`. `STORAGE_VERSION` is 7
-here (the settings gained the panel's PHOSPHOR and CRT LINES), so files from
+here (the settings gained the panel's PHOSPHOR and CRT), so files from
 an xtro board are rejected rather than misread — same policy as every bump.
 
 Hold **PAGE** to save everything. `Storage::begin()` mounts but never formats;
@@ -1088,9 +1106,13 @@ palette colour, so every `u8g2_font_*` bitmap font is available with no second
 font engine. Each frame the whole UI is redrawn into the canvas, and
 `flush()` hashes each 8-row band and only sends the bands that changed — a
 moving playhead costs two or three bands of SPI traffic, a still page none.
-The CRT effect is applied at that point too: odd rows go out at 76 % of the
-colour, the exact ratio between each lit colour and its scanline partner on
-the NightShift reference screens.
+The CRT effect is applied at that point too, so the canvas stays clean:
+every palette colour is precomputed at eight brightness levels, and each
+pixel goes out at the level its position asks for — odd rows at 76 % (the
+exact ratio between each lit colour and its scanline partner on the
+NightShift reference screens), falling off toward the tube's edges, black
+outside the rounded corners. Text is U8g2's Amstrad CPC font; 2× titles are
+the same glyph runs stretched in the line callback (`textScaled()`).
 
 ---
 

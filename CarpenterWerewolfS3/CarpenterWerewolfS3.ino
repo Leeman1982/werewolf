@@ -103,6 +103,11 @@ static i2s_chan_handle_t s_i2sTx = nullptr;
 static volatile bool g_audioReady = false;
 volatile uint32_t g_xruns = 0;
 bool g_bigAllocFailed = false;     // bigmem.h: a PSRAM buffer could not be had
+// The last 256 output samples (mono), for the panel's oscilloscopes. Written
+// by the audio task, read by the UI with no lock: a torn read is one wrong
+// pixel on a trace redrawn 30 times a second.
+volatile int16_t  g_scope[256];
+volatile uint16_t g_scopePos = 0;
 
 // ── Flash-write safety ─────────────────────────────────────────────────────
 // Erasing or writing flash disables the ESP32-S3's cache on BOTH cores, so
@@ -255,12 +260,15 @@ static void renderBlock() {
     int active = engineRenderBlock(audioBuf, g_pitchBend, g_modWheel, g_chanAftertouch);
 
     float peakL = 0.0f, peakR = 0.0f;
+    uint16_t sp = g_scopePos;
     for (int n = 0; n < AUDIO_BLOCK; n++) {
         float l = fabsf((float)audioBuf[n * 2]     * (1.0f / 32768.0f));
         float r = fabsf((float)audioBuf[n * 2 + 1] * (1.0f / 32768.0f));
         if (l > peakL) peakL = l;
         if (r > peakR) peakR = r;
+        g_scope[(sp + n) & 255] = (int16_t)(((int)audioBuf[n * 2] + (int)audioBuf[n * 2 + 1]) / 2);
     }
+    g_scopePos = (uint16_t)((sp + AUDIO_BLOCK) & 255);
     g_peakL = peakL; g_peakR = peakR;
     g_activeVoices = active;
 }
@@ -964,7 +972,7 @@ void setup() {
     // A settings file that predates the panel look fields reads back as
     // zero; the struct defaults cover the no-settings case.
     ui.applyContrast(gs.contrast);
-    ui.applyLook(gs.phosphor, gs.crtLines != 0);
+    ui.applyLook(gs.phosphor, gs.crtLines);
 
 #if WOLF_USB_DRIVE
     // SETTINGS -> USB DRIVE. The MSC interface has to exist before the USB

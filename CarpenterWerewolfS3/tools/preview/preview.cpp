@@ -33,6 +33,8 @@ volatile float g_cpuLoad = 0.46f;
 volatile int   g_activeVoices = 3;
 volatile float g_peakL = 0.55f, g_peakR = 0.62f;
 volatile uint32_t g_xruns = 0;
+volatile int16_t  g_scope[256];
+volatile uint16_t g_scopePos = 0;
 int  g_currentPreset = 0;
 bool g_recArm = false;
 volatile bool g_diskMode = false;
@@ -172,6 +174,24 @@ int main() {
     gs.chain[0][0] = { 0, 2 }; gs.chain[0][1] = { 2, 1 }; gs.chain[0][2] = { 1, 4 };
     storage.begin();
 
+    if (getenv("DUMP_PARAMS")) {
+        for (int e = 0; e < NUM_ENGINES; e++) {
+            engineSwitchTo((EngineId)e);
+            printf("== %s\n", ENGINE_NAMES[e]);
+            for (uint8_t pg = 0; pg < engineNumPages(); pg++) {
+                const EnginePageDef* d = enginePage(pg);
+                printf("  [%s]", d->name);
+                for (uint8_t k = 0; k < d->count; k++) printf(" %s|", engineParamInfo(d->first + k)->name);
+                printf("\n");
+            }
+        }
+        return 0;
+    }
+    // A detuned saw pair for the oscilloscopes to show.
+    for (int i = 0; i < 256; i++) {
+        float t1 = fmodf(i / 64.0f, 1.0f), t2 = fmodf(i / 61.0f, 1.0f);
+        g_scope[i] = (int16_t)((t1 + t2 - 1.0f) * 11000.0f);
+    }
     printf("rendering:\n");
     ui.beginDisplay();
     for (int i = 0; i < 4; i++) ui.bootStatus("SEQUENCER");
@@ -208,6 +228,7 @@ int main() {
     g_cpuLoad = 0.46f;
     frame("16_perf");
     ui.gotoScreen(Screen::HELP);         frame("17_help");
+    ui.gotoScreen(Screen::USB_MODE);     frame("17b_usb");
     ui.gotoScreen(Screen::SONG_BROWSE);  frame("18_songs");
     seqs[0].setMuted(true);
     ui.gotoScreen(Screen::MAIN);         frame("19_main_muted");
@@ -215,8 +236,28 @@ int main() {
     ui.toast("PATTERN SAVED");           frame("20_toast");
     ui.setShift(true);                   frame("21_shift");
     ui.setShift(false);
-    gs.phosphor = PHOS_AMBER; ui.applyLook(PHOS_AMBER, true); frame("22_main_amber");
-    ui.applyLook(PHOS_BLOOD, true);      frame("23_main_blood");
-    ui.applyLook(PHOS_GREEN, false);     frame("24_main_nocrt");
+    hostAdvanceUs(1500000);                              // let the toast expire
+    gs.phosphor = PHOS_AMBER; ui.applyLook(PHOS_AMBER, gfx::Canvas::CRT_TUBE); frame("22_main_amber");
+    ui.applyLook(PHOS_BLOOD, gfx::Canvas::CRT_TUBE);   frame("23_main_blood");
+    ui.applyLook(PHOS_MICRO, gfx::Canvas::CRT_TUBE);   frame("24_main_micro");
+    ui.applyLook(PHOS_GREEN, gfx::Canvas::CRT_OFF);    frame("25_main_nocrt");
+    ui.applyLook(PHOS_GREEN, gfx::Canvas::CRT_TUBE);
+    // SYNTH pages with graphs: Prophet-5 FILTER (curve) and ENVELOPES (two).
+    uiSetEngine(ENGINE_PROPHET5); engineLoadPreset(3);
+    ui.gotoScreen(Screen::SYNTH_PAGES);
+    for (uint8_t pg = 0; pg < engineNumPages(); pg++) {
+        const char* n = enginePage(pg)->name;
+        if (!strcmp(n, "FILTER") || !strcmp(n, "ENVELOPES")) {
+            ui.gotoScreen(Screen::SYNTH_PAGES);
+            for (uint8_t k = 0; k < pg; k++) ui.onEncoder(1);
+            ui.onEncPress();
+            ui.onEncoder(1);
+            char nm[32]; snprintf(nm, sizeof(nm), "26_synth_%s", n);
+            for (char* c = nm; *c; c++) if (*c >= 'A' && *c <= 'Z') *c = (char)(*c + 32);
+            frame(nm);
+        }
+    }
+    uiSetEngine(ENGINE_CS80);
+    ui.gotoScreen(Screen::SYNTH_PAGES); ui.onEncPress(); ui.onEncoder(12); frame("27_synth_cs80_env");
     return 0;
 }

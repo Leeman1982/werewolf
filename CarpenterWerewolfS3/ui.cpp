@@ -16,6 +16,8 @@ extern volatile float g_cpuLoad;        // 0..1, measured on the audio core
 extern volatile int   g_activeVoices;
 extern volatile float g_peakL, g_peakR;
 extern volatile uint32_t g_xruns;       // audio blocks that missed their deadline
+extern volatile int16_t  g_scope[256];  // last 256 output samples (mono), a ring
+extern volatile uint16_t g_scopePos;    // next write position in it
 extern int  g_currentPreset;
 extern bool g_recArm;
 void uiTogglePlayAll();
@@ -66,7 +68,9 @@ int  uiKbdOctave(int delta);      // OCT DOWN/UP transpose; returns the new shif
 #define KEY_REPEAT_MS  350       // arrow-key auto-repeat delay...
 #define KEY_RATE_MS     70       // ...and rate
 
-static const uint8_t* const FONT_KEY = u8g2_font_6x13B_tr;
+// Keycap legends: small and square, like the printing on a rubber key.
+static const uint8_t* const FONT_KEY = u8g2_font_nokiafc22_tr;
+#define GRAPH_H      50          // SYNTH_EDIT envelope / filter graphs
 
 static const char* const MENU_LABELS[] = {
     "STEP EDIT", "PATTERN", "PAT OPTS", "CHAIN", "TOOLS",
@@ -113,12 +117,13 @@ static const char* const MIDI_LABELS[] = {
 #define MIDI_ROW_PANIC 7
 
 static const char* const SETTING_LABELS[] = {
-    "MASTER VOL", "BACKLIGHT", "METRONOME", "CRT LINES", "PHOSPHOR", "TOUCH CAL",
+    "MASTER VOL", "BACKLIGHT", "METRONOME", "CRT", "PHOSPHOR", "TOUCH CAL",
     "SAVE ALL", "FORMAT FS", "DEF TIME SIG", "USB DRIVE"
 };
 #define NUM_SETTING_ROWS ((int)SetRow::COUNT)
 
-static const char* const PHOSPHOR_NAMES[NUM_PHOSPHORS] = { "GREEN", "AMBER", "BLOOD" };
+static const char* const PHOSPHOR_NAMES[NUM_PHOSPHORS] = { "GREEN", "AMBER", "BLOOD", "MICRO" };
+static const char* const CRT_NAMES[gfx::Canvas::CRT_MODES] = { "OFF", "LINES", "TUBE" };
 
 static const char* const PATOPT_LABELS[] = {
     "LENGTH", "SWING", "SUBDIV", "SCALE", "ROOT", "TRANSPOSE", "MIDI CHAN", "PRESET",
@@ -156,6 +161,10 @@ static const uint32_t PALETTES[NUM_PHOSPHORS][NUM_COLS] = {
       0xC08634, 0x7A5A30, 0x3E2E1A, 0xB8F07A, 0x86B252, 0xE0402E, 0xA42C20, 0x140E08 },
     { 0x0C0606, 0x1C0E0E, 0x2A1414, 0x402424, 0x7A4A48, 0x9E7270, 0xF0D0CC, 0xFF4A3A,
       0xC0362A, 0x7A2A26, 0x3E1818, 0xE6AE5A, 0xAC854A, 0xFFFFFF, 0xB0B0B0, 0x140808 },
+    // MICRO: the blue glass of an early-80s home computer, cyan for live
+    // data and its yellow for the cursor.
+    { 0x221A6A, 0x2C2380, 0x372D94, 0x5549B0, 0x7A70D0, 0x9A92E0, 0xDCD8FF, 0x7EDCD6,
+      0x58A8A2, 0x6A5FC8, 0x3A308E, 0xEDF171, 0xB8BC4A, 0xE0705E, 0x9F4E44, 0x1A1356 },
 };
 
 // ─── Small drawing vocabulary ───────────────────────────────────────────────
@@ -213,14 +222,14 @@ static void composerOf(uint8_t e, char* out, size_t n) {
 void UI::beginDisplay() {
     panelBegin();
     canvas.begin();
-    applyLook(PHOS_GREEN, true);
+    applyLook(PHOS_GREEN, Canvas::CRT_TUBE);
     bootStatus("BOOTING");
 }
 
-void UI::applyLook(uint8_t phosphor, bool crt) {
+void UI::applyLook(uint8_t phosphor, uint8_t crtMode) {
     if (phosphor >= NUM_PHOSPHORS) phosphor = PHOS_GREEN;
     for (uint8_t i = 0; i < NUM_COLS; i++) canvas.setPalette(i, PALETTES[phosphor][i]);
-    canvas.setCrt(crt);
+    canvas.setCrt(crtMode);
     _dirty = true;
 }
 
@@ -235,66 +244,80 @@ void UI::applyLook(uint8_t phosphor, bool crt) {
 
 void UI::bootStatus(const char* msg) {
     if (_bootStage < 250) _bootStage++;
+    // Scroll the console log.
+    if (msg && *msg) {
+        for (int i = 0; i < BOOT_LOG - 1; i++) memcpy(_bootLog[i], _bootLog[i + 1], sizeof(_bootLog[i]));
+        snprintf(_bootLog[BOOT_LOG - 1], sizeof(_bootLog[0]), "%s", msg);
+    }
     canvas.clear(BG);
-
-    canvas.setFont(FONT_BODY);
-    canvas.text(8, 14, "ZOMBI SS / WEREWOLF S3", MUTED);
-    canvas.textRight(312, 14, "17 ENGINES", MUTED);
-    canvas.hline(0, 19, W, GRID);
-
-    // Corridor: four lines from the corners into a doorway behind the title.
-    const int dx0 = 142, dx1 = 178, dy0 = 64, dy1 = 176;
-    canvas.line(0, 24, dx0, dy0, GRID);   canvas.line(319, 24, dx1, dy0, GRID);
-    canvas.line(0, 204, dx0, dy1, GRID);  canvas.line(319, 204, dx1, dy1, GRID);
-    canvas.frame(dx0, dy0, dx1 - dx0, dy1 - dy0, GRID);
-    canvas.fill(dx0 + 1, dy0 + 1, dx1 - dx0 - 2, dy1 - dy0 - 2, PANEL);
-    // Something in the doorway: two red eyes, lit once the audio is up.
-    if (_bootStage >= 7) {
-        canvas.fill(155, 158, 2, 1, RED);
-        canvas.fill(163, 158, 2, 1, RED);
-    }
-
-    // BOOT SEQUENCE chip.
-    canvas.fill(8, 28, 106, 17, BAR);
-    canvas.setFont(FONT_BODY);
-    canvas.text(13, 41, "BOOT SEQUENCE", TEXT);
-
-    // Title box: double frame, wordmark with a drop shadow, tagline.
-    const int bx = 12, by = 78, bw = 296, bh = 78;
-    canvas.fill(bx, by, bw, bh, BG);
-    canvas.frame(bx, by, bw, bh, GRID);
-    canvas.frame(bx + 3, by + 3, bw - 6, bh - 6, GRID);
-    int wx = (W - WOLF_TITLE_W) / 2, wy = by + 7;
-    canvas.xbm(wx + 2, wy + 2, WOLF_TITLE_W, WOLF_TITLE_H, WOLF_TITLE_BITS, BAR_D);
-    canvas.xbm(wx, wy, WOLF_TITLE_W, WOLF_TITLE_H, WOLF_TITLE_BITS, LIME);
-    canvas.hline(bx + 20, by + bh - 22, bw - 40, GRID);
-    canvas.setFont(FONT_BODY);
-    canvas.textCenter(W / 2, by + bh - 8, "SYNTH / STEP SEQUENCER", LIME);
-
-    // Heartbeat: a flat trace with one blip per completed stage.
-    const int hy = 188;
-    canvas.hline(8, hy, 304, BAR);
     int beats = _bootStage > BOOT_STAGES ? BOOT_STAGES : _bootStage;
-    for (int b = 0; b < beats; b++) {
-        int x = 20 + b * 32;
-        canvas.line(x, hy, x + 3, hy - 9, LIME);
-        canvas.line(x + 3, hy - 9, x + 6, hy + 6, LIME);
-        canvas.line(x + 6, hy + 6, x + 9, hy, LIME);
-    }
-    for (int x = 8; x < 312; x += 38) canvas.vline(x, hy - 2, 5, BAR);
 
-    // Status line.
-    canvas.setFont(FONT_BOLD);
-    char st[28];
-    snprintf(st, sizeof(st), "%s_", (msg && *msg) ? msg : "");
-    int ex = canvas.text(8, 213, st, LIME);
-    if (blinkOn()) canvas.fill(ex + 2, 203, 7, 12, LIME);
-    char stage[12];
-    snprintf(stage, sizeof(stage), "%02u/%02u", (unsigned)(beats), (unsigned)BOOT_STAGES);
+    // Banner, micro style.
     canvas.setFont(FONT_BODY);
-    canvas.textRight(312, 213, stage, MUTED);
+    canvas.textCenter(W / 2, 12, "**** ZOMBI SS  WEREWOLF S3 ****", LIME);
+    canvas.hline(8, 17, W - 16, GRID);
 
-    // Byline, also in the title face.
+    // The vector scene: a full moon, a mountain ridge, and a perspective
+    // grid running to the horizon -- all line art with phosphor glow.
+    const int hy = 116;                                    // horizon
+    const int mx = 262, my = 42, mr = 18;
+    canvas.glowLine(mx - mr, my, mx - mr, my, TEXT, BAR_D);
+    for (int a = 0; a < 32; a++) {                         // moon outline
+        float t0 = a * 0.19635f, t1 = (a + 1) * 0.19635f;
+        canvas.glowLine(mx + (int)(mr * cosf(t0)), my + (int)(mr * sinf(t0)),
+                        mx + (int)(mr * cosf(t1)), my + (int)(mr * sinf(t1)), TEXT, BAR_D);
+    }
+    canvas.dither(mx - mr + 3, my - mr + 3, mr * 2 - 6, mr * 2 - 6, 0.18f, BAR);
+    canvas.circle(mx - 6, my - 4, 4, DIM);                 // craters
+    canvas.circle(mx + 7, my + 5, 5, DIM);
+    canvas.circle(mx - 3, my + 9, 2, DIM);
+    static const int8_t RIDGE[] = { 0, 8, 3, 18, 10, 26, 6, 14, 22, 34, 16, 9, 20, 30, 12, 4, 11, 24, 7, 0 };
+    const int nr = (int)sizeof(RIDGE);
+    for (int i = 0; i < nr - 1; i++) {
+        int x0 = i * W / (nr - 1), x1 = (i + 1) * W / (nr - 1);
+        canvas.glowLine(x0, hy - RIDGE[i], x1, hy - RIDGE[i + 1], BAR, BAR_D);
+    }
+    canvas.hline(0, hy, W, LIME);
+    for (int k = -10; k <= 10; k++)                        // floor: lines to the vanishing point
+        canvas.line(W / 2 + k * 6, hy, W / 2 + k * 40, 170, (k & 1) ? BAR_D : BAR);
+    for (int j = 1; j <= 5; j++) {                         // floor: receding cross lines
+        int yy = hy + (j * j * 54) / 25;
+        if (yy < 170) canvas.hline(0, yy, W, j < 3 ? BAR_D : BAR);
+    }
+
+    // Wordmark over the sky, with a hard drop shadow.
+    int wx = (W - WOLF_TITLE_W) / 2, wy = 64;
+    canvas.xbm(wx + 2, wy + 3, WOLF_TITLE_W, WOLF_TITLE_H, WOLF_TITLE_BITS, BG);
+    canvas.xbm(wx + 1, wy + 2, WOLF_TITLE_W, WOLF_TITLE_H, WOLF_TITLE_BITS, BAR_D);
+    canvas.xbm(wx, wy, WOLF_TITLE_W, WOLF_TITLE_H, WOLF_TITLE_BITS, LIME);
+    // Something in the dark past the grid once the audio is up: two eyes.
+    if (_bootStage >= 7) { canvas.fill(152, 132, 3, 2, RED); canvas.fill(164, 132, 3, 2, RED); }
+
+    // Console: the stages so far, printed like a program loading from tape,
+    // the newest with a blinking cursor. If start-up stops, this says where.
+    canvas.fill(0, 172, W, 50, BG);
+    canvas.hline(8, 173, W - 16, GRID);
+    canvas.setFont(FONT_BODY);
+    int line = 0;
+    for (int i = 0; i < BOOT_LOG; i++) {
+        if (!_bootLog[i][0]) continue;
+        char b[40];
+        bool last = (i == BOOT_LOG - 1);
+        if (last) snprintf(b, sizeof(b), "%s", _bootLog[i]);
+        else      snprintf(b, sizeof(b), "LOAD \"%s\" OK", _bootLog[i]);
+        (void)line;
+        int yy = 214 - (BOOT_LOG - 1 - i) * 11;
+        int ex = canvas.text(10, yy, b, last ? LIME : DIM);
+        if (last && blinkOn()) canvas.fill(ex + 2, yy - 8, 8, 9, LIME);
+    }
+    char stage[12];
+    snprintf(stage, sizeof(stage), "%02u/%02u", (unsigned)beats, (unsigned)BOOT_STAGES);
+    canvas.textRight(W - 10, 214, stage, MUTED);
+    // Progress: a row of blocks, one per stage.
+    for (int k = 0; k < BOOT_STAGES; k++)
+        canvas.fill(W - 8 - (BOOT_STAGES - k) * 7, 178, 5, 5, k < beats ? LIME : GRID);
+
+    // Byline in the title face.
     canvas.xbm((W - WOLF_BYLINE_W) / 2, 222, WOLF_BYLINE_W, WOLF_BYLINE_H, WOLF_BYLINE_BITS, LIME);
 
     canvas.flush(panelSink());
@@ -371,8 +394,14 @@ bool UI::isListScreen() const {
 
 int UI::visRows() const {
     // Screens that are not the 6-row list lay out every row at once, so their
-    // cursor never has to scroll.
-    return isListScreen() ? VIS_ROWS : 64;
+    // cursor never has to scroll. A SYNTH page with a graph above its list
+    // has room for four.
+    if (!isListScreen()) return 64;
+    return synthHasGraph() ? VIS_ROWS - 2 : VIS_ROWS;
+}
+
+int UI::listY() const {
+    return CONTENT_Y + (synthHasGraph() ? GRAPH_H + 4 : 0);
 }
 
 void UI::ensureVisible(int visibleRows) {
@@ -1010,11 +1039,11 @@ void UI::editValue(int d) {
             applyContrast(_gs->contrast); break;
         case SetRow::METRONOME: _gs->metronome = !_gs->metronome; _editing = false; break;
         case SetRow::CRT:
-            _gs->crtLines = !_gs->crtLines; _editing = false;
-            applyLook(_gs->phosphor, _gs->crtLines != 0); break;
+            _gs->crtLines = (uint8_t)((_gs->crtLines + (d > 0 ? 1 : Canvas::CRT_MODES - 1)) % Canvas::CRT_MODES);
+            applyLook(_gs->phosphor, _gs->crtLines); break;
         case SetRow::PHOSPHOR:
             _gs->phosphor = (uint8_t)((_gs->phosphor + (d > 0 ? 1 : NUM_PHOSPHORS - 1)) % NUM_PHOSPHORS);
-            applyLook(_gs->phosphor, _gs->crtLines != 0); break;
+            applyLook(_gs->phosphor, _gs->crtLines); break;
         case SetRow::DEF_TIMESIG: {
             int v = (int)_gs->defaultTimeSigIdx + (d > 0 ? 1 : -1);
             if (v < 0) v = NUM_TIME_SIGS - 1;
@@ -1199,8 +1228,9 @@ int UI::hitContent(int x, int y) const {
         break;
     }
     if (isListScreen()) {
-        int slot = (y - CONTENT_Y) / ROW_H;
-        if (slot < 0 || slot >= VIS_ROWS) return -1;
+        if (y < listY()) return -1;
+        int slot = (y - listY()) / ROW_H;
+        if (slot < 0 || slot >= visRows()) return -1;
         int idx = _scroll + slot;
         return (idx < rowCount()) ? idx : -1;
     }
@@ -1361,22 +1391,33 @@ void UI::drawTopBar() {
     // The whole bar turns amber while the active track is muted (manual 03).
     uint8_t bar = s.muted() ? AMBER : LIME;
     canvas.fill(0, 0, W, TOP_H, bar);
+    canvas.hline(0, TOP_H - 1, W, s.muted() ? AMBER_D : LIME_D);   // lip under the bar
 
     char buf[40];
-    snprintf(buf, sizeof(buf), "CARPENTER / T%u %s", (unsigned)(*_track + 1),
+    snprintf(buf, sizeof(buf), "CARPENTER/T%u %s", (unsigned)(*_track + 1),
              (*_track == INTERNAL_TRACK) ? "SYNTH" : "MIDI");
     canvas.setFont(FONT_BOLD);
-    canvas.text(4, 13, buf, INK);
+    int tx = canvas.text(10, 13, buf, INK);   // clear of the tube's rounded corner
+
+    // The home-computer badge: four slanted colour stripes, straight off the
+    // corner of an early-80s case.
+    static const uint8_t STRIPE[4] = { RED, AMBER, BAR, LIME_D };
+    int sx = tx + 8;
+    canvas.fill(sx - 2, 2, 42, TOP_H - 4, INK);
+    for (int k = 0; k < 4; k++)
+        for (int j = 0; j < TOP_H - 6; j++)
+            canvas.hline(sx + k * 9 + (TOP_H - 6 - j) / 2, 3 + j, 6, STRIPE[k]);
 
     // Right to left: pattern number, transport, REC lamp, level meters.
     snprintf(buf, sizeof(buf), "P%02u", (unsigned)(s.currentPattern() + 1));
-    int x = canvas.textRight(316, 13, buf, INK) - canvas.textW(buf) - 14;
+    int x = W - 10 - canvas.textW(buf);
+    canvas.text(x, 13, buf, INK);
+    x -= 14;
     if (s.playState() == PlayState::PLAYING)      triRight(x, 4, 10, INK);
     else if (s.playState() == PlayState::PAUSED) { canvas.fill(x, 4, 3, 10, INK); canvas.fill(x + 5, 4, 3, 10, INK); }
     else                                          canvas.fill(x, 5, 8, 8, INK);
     x -= 8;
     if (g_recArm) {
-        canvas.setFont(FONT_BOLD);
         int w = canvas.textW("REC");
         canvas.text(x - w, 13, "REC", RED);
         x -= w + 12;
@@ -1384,22 +1425,18 @@ void UI::drawTopBar() {
         canvas.circle(x + 5, 8, 4, RED);
         x -= 8;
     }
-    // L/R meters: 12 segments each, the last two red near clipping.
+    // L/R meters: 10 segments each, the last two red near clipping.
     static float pl = 0.0f, pr = 0.0f;
     float l = g_peakL, r = g_peakR;
     pl = (l > pl) ? l : pl * 0.85f;
     pr = (r > pr) ? r : pr * 0.85f;
-    const int segs = 12, mx = x - segs * 3;
-    for (int i = 0; i < segs; i++) {
-        bool hot = i >= segs - 2;
-        uint8_t on = hot ? RED : INK;
-        canvas.fill(mx + i * 3, 4, 2, 4, (pl * segs > i + 0.5f) ? on : (uint8_t)LIME_D);
-        canvas.fill(mx + i * 3, 10, 2, 4, (pr * segs > i + 0.5f) ? on : (uint8_t)LIME_D);
-    }
-    if (bar == AMBER) {                 // keep unlit segments visible on amber
+    const int segs = 10, mx = x - segs * 3;
+    const uint8_t off = s.muted() ? (uint8_t)AMBER_D : (uint8_t)LIME_D;
+    if (mx > sx + 42) {
         for (int i = 0; i < segs; i++) {
-            if (!(pl * segs > i + 0.5f)) canvas.fill(mx + i * 3, 4, 2, 4, AMBER_D);
-            if (!(pr * segs > i + 0.5f)) canvas.fill(mx + i * 3, 10, 2, 4, AMBER_D);
+            uint8_t on = (i >= segs - 2) ? (uint8_t)RED : (uint8_t)INK;
+            canvas.fill(mx + i * 3, 4, 2, 4, (pl * segs > i + 0.5f) ? on : off);
+            canvas.fill(mx + i * 3, 10, 2, 4, (pr * segs > i + 0.5f) ? on : off);
         }
     }
 }
@@ -1468,30 +1505,50 @@ void UI::drawTitle() {
     canvas.textFit(10, TITLE_Y + 15, upper(left), limit - 10, LIME);
 }
 
+// Soft keys as the rubber keys of a cheap early-80s micro: a moulded key
+// top with a lit upper edge standing on a dark skirt, legends printed small.
+// A pressed key sinks onto its skirt; a latched SHIFT stays lit amber.
 void UI::drawSoftKeys() {
-    canvas.fill(0, SK_Y - 2, W, H - SK_Y + 2, FOOT);
-    canvas.hline(0, SK_Y - 2, W, GRID);
+    // The case moulding behind the keys: dark plastic with a dithered grain.
+    canvas.fill(0, SK_Y - 3, W, H - SK_Y + 3, FOOT);
+    canvas.dither(0, SK_Y - 3, W, H - SK_Y + 3, 0.12f, PANEL);
+    canvas.hline(0, SK_Y - 3, W, GRID);
     const bool sh = shift();
     const bool playing = seq().playState() == PlayState::PLAYING;
     static const char* const BASE[SK_COUNT]  = { "PAGE", "PLAY", "SHIFT", "TRACK", "MUTE", "", "", "PUSH" };
     static const char* const SHIFTED[SK_COUNT] = { "PAGE", "REC", "SHIFT", "PAT+", "M.TRK", "", "", "PUSH" };
     canvas.setFont(FONT_KEY);
     for (uint8_t k = 0; k < SK_COUNT; k++) {
-        int x = k * SK_W + 1, y = SK_Y + 1, w = SK_W - 2, h = SK_H - 3;
+        const int x = k * SK_W + 2, w = SK_W - 4, top = SK_Y, h = SK_H - 4;
         bool pressed = _tDown && _tKey == k;
         bool latched = (k == SK_SHIFT) && sh;
-        uint8_t fg = MUTED;
-        if (pressed)      { canvas.fill(x, y, w, h, LIME);  fg = INK; }
-        else if (latched) { canvas.fill(x, y, w, h, AMBER); fg = INK; }
-        else              { canvas.frame(x, y, w, h, GRID); }
+        int y = top + (pressed ? 3 : 0);
+        // Skirt (the part of the key below the top), then the top itself.
+        canvas.fill(x, top + 3, w, h, INK);
+        canvas.fill(x + 1, top + 3 + h - 1, w - 2, 1, BAR_D);
+        uint8_t face = pressed ? (uint8_t)LIME : latched ? (uint8_t)AMBER : (uint8_t)HILITE;
+        canvas.fill(x, y, w, h, face);
+        if (!pressed && !latched) {
+            canvas.hline(x + 1, y, w - 2, GRID);          // lit upper edge
+            canvas.vline(x, y + 1, h - 2, GRID);
+            canvas.hline(x + 1, y + h - 1, w - 2, PANEL); // shaded lower edge
+            canvas.dither(x + 1, y + h - 5, w - 2, 4, 0.25f, PANEL);
+        }
+        uint8_t fg = (pressed || latched) ? (uint8_t)INK : (uint8_t)TEXT;
         if (!pressed && !latched) {
             if (sh && k != SK_SHIFT && strcmp(BASE[k], SHIFTED[k]) != 0) fg = AMBER;
             if (k == SK_PLAY && playing && !sh) fg = LIME;
         }
         int cx = x + w / 2, cy = y + h / 2;
-        if (k == SK_DOWN)      { triLeft(cx - 5, cy - 5, 11, fg); if (sh) { canvas.setFont(FONT_SMALL); canvas.text(x + 2, y + h - 2, "x8", AMBER); canvas.setFont(FONT_KEY); } }
-        else if (k == SK_UP)   { triRight(cx - 2, cy - 5, 11, fg); if (sh) { canvas.setFont(FONT_SMALL); canvas.textRight(x + w - 2, y + h - 2, "x8", AMBER); canvas.setFont(FONT_KEY); } }
-        else canvas.textCenter(cx, cy + 5, sh ? SHIFTED[k] : BASE[k], fg);
+        if (k == SK_DOWN || k == SK_UP) {
+            if (k == SK_DOWN) triLeft(cx - 5, cy - 5, 11, fg);
+            else              triRight(cx - 2, cy - 5, 11, fg);
+            if (sh) { canvas.setFont(FONT_SMALL);
+                      canvas.text(k == SK_DOWN ? x + 2 : x + w - 12, y + h - 2, "x8", AMBER);
+                      canvas.setFont(FONT_KEY); }
+        } else {
+            canvas.textCenter(cx, cy + 4, sh ? SHIFTED[k] : BASE[k], fg);
+        }
         if (k == SK_PLAY && playing && !pressed) canvas.fill(x + 3, y + 3, 3, 3, LIME);
     }
 }
@@ -1504,23 +1561,24 @@ void UI::drawSoftKeys() {
 // the leader becomes a segment bar.
 void UI::drawListRow(int i, int idx, const char* label, const char* value,
                      float bar, uint8_t valueCol) {
-    int y = CONTENT_Y + i * ROW_H;
+    int y = listY() + i * ROW_H;
     bool sel = (idx == _row);
-    int base = y + 18;
+    int base = y + 17;
     if (sel) {
-        canvas.fill(LIST_X, y + 2, LIST_R - LIST_X + 3, ROW_H - 4, HILITE);
-        if (_editing) { if (blinkOn()) canvas.fill(LIST_X + 3, y + 8, 6, 11, AMBER); }
+        canvas.fill(LIST_X, y + 3, LIST_R - LIST_X + 3, ROW_H - 5, HILITE);
+        canvas.dither(LIST_X, y + 3, 40, ROW_H - 5, 0.25f, PANEL);   // crushed fade-in
+        if (_editing) { if (blinkOn()) canvas.fill(LIST_X + 3, y + 9, 8, 9, AMBER); }
         else          chevron(LIST_X + 3, y + 9, AMBER);
     }
     canvas.setFont(FONT_BODY);
-    int lx = canvas.text(LIST_X + 14, base, upper(label), sel ? LIME : TEXT);
+    int lx = canvas.text(LIST_X + 16, base, upper(label), sel ? LIME : TEXT);
     int vx = LIST_R;
     if (value && *value) {
         int vw = canvas.textW(value);
         vx = LIST_R - vw;
         uint8_t vc = (valueCol != 0xFF) ? valueCol : (uint8_t)(sel ? AMBER : LIME);
         if (sel && _editing) {
-            canvas.fill(vx - 3, y + 5, vw + 6, 17, AMBER);
+            canvas.fill(vx - 3, y + 7, vw + 6, 14, AMBER);
             canvas.text(vx, base, value, INK);
         } else {
             canvas.text(vx, base, value, vc);
@@ -1528,7 +1586,7 @@ void UI::drawListRow(int i, int idx, const char* label, const char* value,
     }
     if (bar >= 0.0f) {
         int bx = 150, bw = vx - 14 - bx;
-        if (bw > 20) canvas.segBar(bx, y + 11, bw, 8, bar, sel ? LIME : BAR, BAR_D);
+        if (bw > 20) canvas.segBar(bx, y + 10, bw, 8, bar, sel ? LIME : BAR, BAR_D);
     } else if (value && *value) {
         int a = lx + 6, b = vx - 8;
         if (b > a) canvas.dotH(a, base, b - a, BAR_D, 1, 3);
@@ -1536,8 +1594,8 @@ void UI::drawListRow(int i, int idx, const char* label, const char* value,
 }
 
 void UI::drawScrollbar() {
-    int n = rowCount(), vis = VIS_ROWS;
-    int top = CONTENT_Y + 2, h = VIS_ROWS * ROW_H - 4;
+    int n = rowCount(), vis = visRows();
+    int top = listY() + 2, h = vis * ROW_H - 4;
     if (n <= vis) return;
     canvas.dotV(W - 5, top, h, GRID, 1, 2);
     int th = h * vis / n; if (th < 8) th = 8;
@@ -1616,10 +1674,12 @@ void UI::drawMain() {
     }
     char buf[40];
     snprintf(buf, sizeof(buf), "%s %s", NOTE_NAMES[p.rootNote % 12], SCALES[p.scaleIdx].name);
-    canvas.text(x, CONTENT_Y + 13, buf, LIME);
+    int lx = canvas.text(x, CONTENT_Y + 13, buf, LIME);
     if (p.swing) snprintf(buf, sizeof(buf), "SW %u%%  %u STEPS", (unsigned)p.swing, (unsigned)p.length);
     else         snprintf(buf, sizeof(buf), "%u STEPS", (unsigned)p.length);
-    canvas.textRight(W - 6, CONTENT_Y + 13, buf, LIME);
+    int rx = canvas.textRight(W - 6, CONTENT_Y + 13, buf, LIME) - canvas.textW(buf);
+    // A live oscilloscope of the synth's output in the space between.
+    if (rx - lx > 60) drawScope(lx + 10, CONTENT_Y, rx - lx - 20, 16, LIME);
 
     for (uint8_t i = 0; i < STEPS_PER_PAGE; i++) {
         uint8_t st = base + i;
@@ -1658,14 +1718,96 @@ void UI::drawMenu() {
         int x = col ? W / 2 + 2 : LIST_X, y = CONTENT_Y + 2 + r * 23, w = W / 2 - 6;
         bool sel = (i == _row);
         char num[4]; snprintf(num, sizeof(num), "%02d", i + 1);
+        uint8_t fg = sel ? (uint8_t)INK : (uint8_t)TEXT, nc = sel ? (uint8_t)INK : (uint8_t)DIM;
         if (sel) {
             canvas.fill(x, y, w, 21, LIME);
-            canvas.text(x + 6, y + 15, num, INK);
-            canvas.text(x + 30, y + 15, MENU_LABELS[i], INK);
-        } else {
-            canvas.text(x + 6, y + 15, num, DIM);
-            canvas.text(x + 30, y + 15, MENU_LABELS[i], TEXT);
+            canvas.dither(x + w - 30, y, 30, 21, 0.5f, LIME_D);   // crushed right edge
         }
+        canvas.text(x + 5, y + 15, num, nc);
+        drawMenuIcon(i, x + 25, y + 4, sel ? (uint8_t)INK : (uint8_t)LIME);
+        canvas.text(x + 46, y + 15, MENU_LABELS[i], fg);
+    }
+}
+
+// Thirteen little vector drawings, one per menu page, all line art in a
+// 16x13 box: the way an early-80s machine would have drawn icons, if it had
+// drawn icons at all.
+void UI::drawMenuIcon(int item, int x, int y, uint8_t c) {
+    switch (item) {
+    case 0:   // STEP EDIT: a step grid with one bar raised
+        for (int k = 0; k < 4; k++) canvas.frame(x + k * 4, y + 6, 3, 7, c);
+        canvas.fill(x + 4, y + 1, 3, 12, c);
+        break;
+    case 1:   // PATTERN: stacked cards
+        canvas.frame(x + 4, y, 12, 9, c);
+        canvas.fill(x, y + 4, 12, 9, c == INK ? (uint8_t)LIME : (uint8_t)BG);
+        canvas.frame(x, y + 4, 12, 9, c);
+        break;
+    case 2:   // PAT OPTS: three sliders
+        for (int k = 0; k < 3; k++) {
+            canvas.hline(x, y + 2 + k * 4, 16, c);
+            canvas.fill(x + (k == 0 ? 3 : k == 1 ? 10 : 6), y + 1 + k * 4, 3, 3, c);
+        }
+        break;
+    case 3:   // CHAIN: two links
+        canvas.circle(x + 5, y + 6, 4, c);
+        canvas.circle(x + 11, y + 6, 4, c);
+        break;
+    case 4:   // TOOLS: a wrench
+        canvas.line(x + 2, y + 12, x + 11, y + 3, c);
+        canvas.line(x + 3, y + 12, x + 12, y + 3, c);
+        canvas.circle(x + 12, y + 3, 3, c);
+        break;
+    case 5:   // ENGINE: a chip
+        canvas.frame(x + 3, y + 2, 10, 9, c);
+        for (int k = 0; k < 4; k++) { canvas.vline(x + 4 + k * 2, y, 2, c); canvas.vline(x + 4 + k * 2, y + 11, 2, c); }
+        break;
+    case 6: { // SYNTH: one cycle of a sine
+        int px = x, py = y + 6;
+        for (int k = 1; k <= 16; k++) {
+            int qy = y + 6 - (int)(5.0f * sinf((float)k * 6.2832f / 16.0f));
+            canvas.line(px, py, x + k, qy, c);
+            px = x + k; py = qy;
+        }
+        break;
+    }
+    case 7:   // PRESETS: a floppy disk
+        canvas.frame(x + 1, y, 14, 13, c);
+        canvas.fill(x + 4, y, 7, 4, c);
+        canvas.frame(x + 4, y + 7, 8, 6, c);
+        break;
+    case 8:   // MIXER: three faders
+        for (int k = 0; k < 3; k++) {
+            canvas.vline(x + 2 + k * 6, y, 13, c);
+            canvas.fill(x + k * 6, y + (k == 0 ? 7 : k == 1 ? 2 : 9), 5, 3, c);
+        }
+        break;
+    case 9:   // MIDI: a five-pin DIN socket
+        canvas.circle(x + 8, y + 6, 6, c);
+        canvas.pixel(x + 4, y + 6, c); canvas.pixel(x + 12, y + 6, c);
+        canvas.pixel(x + 5, y + 3, c); canvas.pixel(x + 11, y + 3, c);
+        canvas.pixel(x + 8, y + 2, c);
+        canvas.fill(x + 7, y + 10, 3, 2, c);
+        break;
+    case 10: { // SETTINGS: a cog
+        canvas.circle(x + 8, y + 6, 3, c);
+        for (int k = 0; k < 8; k++) {
+            float a = (float)k * 0.7854f;
+            canvas.line(x + 8 + (int)(4.0f * cosf(a)), y + 6 + (int)(4.0f * sinf(a)),
+                        x + 8 + (int)(6.5f * cosf(a)), y + 6 + (int)(6.5f * sinf(a)), c);
+        }
+        break;
+    }
+    case 11:  // PERF: a trace in a box
+        canvas.frame(x, y, 16, 13, c);
+        canvas.line(x + 2, y + 9, x + 5, y + 5, c); canvas.line(x + 5, y + 5, x + 8, y + 8, c);
+        canvas.line(x + 8, y + 8, x + 13, y + 3, c);
+        break;
+    case 12:  // HELP: a question mark
+        canvas.line(x + 5, y + 3, x + 7, y + 1, c); canvas.line(x + 7, y + 1, x + 10, y + 1, c);
+        canvas.line(x + 10, y + 1, x + 11, y + 3, c); canvas.line(x + 11, y + 3, x + 8, y + 7, c);
+        canvas.vline(x + 8, y + 7, 2, c); canvas.fill(x + 7, y + 11, 3, 2, c);
+        break;
     }
 }
 
@@ -1816,18 +1958,19 @@ void UI::drawChain() {
             snprintf(t, sizeof(t), "%d", i + 1);
             canvas.text(x + 3, y + 9, t, DIM);
             canvas.setFont(FONT_BIG);
-            canvas.textCenter(x + w / 2, y + 36, "--", DIM);
+            canvas.textScaled(x + w / 2 - canvas.textScaledW("--", 2) / 2, y + 38, "--", DIM, 2);
         } else {
             canvas.fill(x, y, w, h, PANEL);
             canvas.frame(x, y, w, h, live ? LIME : GRID);
             snprintf(t, sizeof(t), "%d", i + 1);
             canvas.text(x + 3, y + 9, t, DIM);
+            canvas.textCenter(x + w / 2, y + 19, "PAT", DIM);
             canvas.setFont(FONT_BIG);
-            snprintf(t, sizeof(t), "P%d", c.patternIdx + 1);
-            canvas.textCenter(x + w / 2, y + 34, t, LIME);
+            snprintf(t, sizeof(t), "%d", c.patternIdx + 1);
+            canvas.textScaled(x + w / 2 - canvas.textScaledW(t, 2) / 2, y + 38, t, LIME, 2);
             canvas.setFont(FONT_BODY);
             snprintf(t, sizeof(t), "x%u", (unsigned)c.repeats);
-            canvas.textCenter(x + w / 2, y + 51, t, (sel && _editing && shift()) ? AMBER : TEXT);
+            canvas.textCenter(x + w / 2, y + 53, t, (sel && _editing && shift()) ? AMBER : TEXT);
         }
         if (sel) {
             cursorFrame(x - 1, y - 1, w + 2, h + 2, AMBER);
@@ -1921,8 +2064,9 @@ void UI::drawSynthPages() {
 
 void UI::drawSynthEdit() {
     const EnginePageDef& pg = *enginePage(_synthPage);
+    if (synthHasGraph()) drawSynthGraphs();
     char val[16];
-    for (int i = 0; i < VIS_ROWS; i++) {
+    for (int i = 0; i < visRows(); i++) {
         int idx = _scroll + i;
         if (idx >= pg.count) break;
         uint8_t id = pg.first + (uint8_t)idx;
@@ -1935,6 +2079,174 @@ void UI::drawSynthEdit() {
             pi.kind == PK_BIPOLAR || pi.kind == PK_CENTS || pi.kind == PK_INT)
             bar = engineGetParameter(id);
         drawListRow(i, idx, pi.name, val, bar);
+    }
+}
+
+// ── SYNTH page graphs ───────────────────────────────────────────────────────
+// Found from the page's own parameter names rather than a per-engine table,
+// so every engine gets them: a parameter called "<prefix> ATK/ATTACK" starts
+// an envelope, and DEC/DECAY, SUS/SUSTAIN and REL/RELEASE with the same
+// prefix complete it (CS-80 "VCA Atk", Prophet "VCF ATK", String Ensemble
+// "ATTACK"). A page holding the engine's filter cutoff gets a response curve.
+static bool envToken(const char* name, char* prefix, size_t n, char* which) {
+    const char* sp = strrchr(name, ' ');
+    const char* tok = sp ? sp + 1 : name;
+    size_t pl = sp ? (size_t)(sp - name) : 0;
+    char t[10]; size_t k = 0;
+    for (; tok[k] && k + 1 < sizeof(t); k++) t[k] = (char)((tok[k] >= 'a' && tok[k] <= 'z') ? tok[k] - 32 : tok[k]);
+    t[k] = 0;
+    if      (!strcmp(t, "ATK") || !strcmp(t, "ATTACK"))  *which = 'A';
+    else if (!strcmp(t, "DEC") || !strcmp(t, "DECAY"))   *which = 'D';
+    else if (!strcmp(t, "SUS") || !strcmp(t, "SUSTAIN")) *which = 'S';
+    else if (!strcmp(t, "REL") || !strcmp(t, "RELEASE")) *which = 'R';
+    else return false;
+    if (pl >= n) pl = n - 1;
+    for (size_t i = 0; i < pl; i++) prefix[i] = (char)((name[i] >= 'a' && name[i] <= 'z') ? name[i] - 32 : name[i]);
+    prefix[pl] = 0;
+    return true;
+}
+
+int UI::findEnvGroups(EnvGroup* out, int max) const {
+    if (_screen != Screen::SYNTH_EDIT) return 0;
+    const EnginePageDef& pg = *enginePage(_synthPage);
+    EnvGroup g[4];
+    int n = 0;
+    for (int i = 0; i < pg.count; i++) {
+        char pre[10], w;
+        if (!envToken(engineParamInfo(pg.first + i)->name, pre, sizeof(pre), &w)) continue;
+        int k = 0;
+        while (k < n && strcmp(g[k].label, pre) != 0) k++;
+        if (k == n) {
+            if (n == 4) continue;
+            strcpy(g[n].label, pre); g[n].a = g[n].d = g[n].s = g[n].r = -1; n++;
+        }
+        int8_t* slot = (w == 'A') ? &g[k].a : (w == 'D') ? &g[k].d : (w == 'S') ? &g[k].s : &g[k].r;
+        if (*slot < 0) *slot = (int8_t)i;
+    }
+    int m = 0;
+    for (int k = 0; k < n; k++) {
+        if (g[k].a < 0 || (g[k].d < 0 && g[k].r < 0)) continue;   // not an envelope
+        if (out && m < max) out[m] = g[k];
+        m++;
+    }
+    return m;
+}
+
+bool UI::pageHasFilterGraph() const {
+    if (_screen != Screen::SYNTH_EDIT) return false;
+    const EnginePageDef& pg = *enginePage(_synthPage);
+    uint8_t id = engineFilterCutoffParamId();
+    return id != ENGINE_PARAM_NONE && id >= pg.first && id < pg.first + pg.count;
+}
+
+bool UI::synthHasGraph() const {
+    return _screen == Screen::SYNTH_EDIT && (pageHasFilterGraph() || findEnvGroups(nullptr, 0) > 0);
+}
+
+void UI::drawSynthGraphs() {
+    EnvGroup g[2];
+    int ne = findEnvGroups(g, 2);
+    if (ne > 2) ne = 2;
+    bool filt = pageHasFilterGraph();
+    int n = ne + (filt ? 1 : 0);
+    if (n > 2) { n = 2; ne = 1; }
+    int gw = (W - 8 - (n - 1) * 4) / n, x = 4, y = CONTENT_Y + 1;
+    if (filt) { drawFilterGraph(x, y, gw, GRAPH_H); x += gw + 4; }
+    for (int k = 0; k < ne; k++) { drawEnvGraph(g[k], x, y, gw, GRAPH_H); x += gw + 4; }
+}
+
+void UI::drawEnvGraph(const EnvGroup& g, int x, int y, int w, int h) {
+    const EnginePageDef& pg = *enginePage(_synthPage);
+    auto val = [&](int8_t row) { return row < 0 ? 0.0f : engineGetParameter(pg.first + row); };
+    canvas.fill(x, y, w, h, BG);
+    canvas.frame(x, y, w, h, GRID);
+    for (int k = 1; k < 3; k++) canvas.dotH(x + 1, y + k * h / 3, w - 2, GRID, 1, 4);
+    canvas.setFont(FONT_SMALL);
+    char lab[16]; snprintf(lab, sizeof(lab), "%s ENV", g.label[0] ? g.label : "AMP");
+    canvas.text(x + 3, y + 8, lab, DIM);
+
+    // Segment widths from the normalized knobs; a missing SUSTAIN is 0 (an
+    // AD/ADR shape), a missing RELEASE follows DECAY, drawn dotted.
+    const float span = (float)(w - 12) / 3.4f;
+    float a = val(g.a), d = val(g.d < 0 ? g.r : g.d), sl = g.s < 0 ? 0.0f : val(g.s);
+    float r = (g.r < 0) ? d : val(g.r);
+    int top = y + 11, bot = y + h - 4, x0 = x + 4;
+    // Square-root spacing: envelope times are exponential knobs, and a fast
+    // attack should still be a visible slope, not a vertical line.
+    int xa = x0 + 2 + (int)(sqrtf(a) * span), xd = xa + 2 + (int)(sqrtf(d) * span);
+    int xs = xd + (g.s < 0 ? 0 : (int)(0.4f * span));
+    int xr = xs + 2 + (int)(sqrtf(r) * span);
+    if (xr > x + w - 4) xr = x + w - 4;
+    int ys = bot - (int)(sl * (float)(bot - top));
+    int sel = _row;   // page-relative row under the cursor
+    auto segCol = [&](int8_t row) { return (row >= 0 && row == sel) ? (uint8_t)AMBER : (uint8_t)LIME; };
+    auto segHalo = [&](int8_t row) { return (row >= 0 && row == sel) ? (uint8_t)AMBER_D : (uint8_t)LIME_D; };
+    canvas.glowLine(x0, bot, xa, top, segCol(g.a), segHalo(g.a));
+    canvas.glowLine(xa, top, xd, ys, segCol(g.d), segHalo(g.d));
+    if (g.s >= 0) canvas.glowLine(xd, ys, xs, ys, segCol(g.s), segHalo(g.s));
+    if (g.r >= 0) canvas.glowLine(xs, ys, xr, bot, segCol(g.r), segHalo(g.r));
+    else if (ys < bot) { int n = xr - xs; for (int i = 0; i < n; i += 2)
+                             canvas.pixel(xs + i, ys + (bot - ys) * i / (n ? n : 1), LIME_D); }
+    // Nodes, the selected stage's end point boxed in amber.
+    const int nx[4] = { xa, xd, xs, xr }, ny[4] = { top, ys, ys, bot };
+    const int8_t nr[4] = { g.a, g.d, g.s, g.r };
+    for (int k = 0; k < 4; k++) {
+        if (nr[k] < 0) continue;
+        if (nr[k] == sel) canvas.frame(nx[k] - 3, ny[k] - 3, 7, 7, AMBER);
+        else              canvas.fill(nx[k] - 1, ny[k] - 1, 3, 3, TEXT);
+    }
+}
+
+void UI::drawFilterGraph(int x, int y, int w, int h) {
+    canvas.fill(x, y, w, h, BG);
+    canvas.frame(x, y, w, h, GRID);
+    for (int k = 1; k < 8; k++) canvas.dotV(x + k * w / 8, y + 1, h - 2, GRID, 1, 4);
+    canvas.setFont(FONT_SMALL);
+    canvas.text(x + 3, y + 8, "FILTER", DIM);
+    uint8_t cid = engineFilterCutoffParamId(), rid = engineFilterResonanceParamId();
+    float fc = engineGetParameter(cid);
+    float res = (rid != ENGINE_PARAM_NONE) ? engineGetParameter(rid) : 0.0f;
+    // A resonant 12 dB low-pass, x spanning ten octaves, y from +18 to -36 dB.
+    // A picture of the knobs, not a measurement of any one engine's circuit.
+    float q = 0.6f + res * res * 9.0f;
+    int top = y + 10, bot = y + h - 3;
+    auto yOf = [&](float db) {
+        if (db > 18.0f) db = 18.0f;
+        if (db < -36.0f) db = -36.0f;
+        return top + (int)((18.0f - db) / 54.0f * (float)(bot - top));
+    };
+    int px = -1, py = 0;
+    for (int i = 0; i < w - 4; i++) {
+        float f = (float)i / (float)(w - 5);
+        float ratio = powf(2.0f, (f - fc) * 10.0f);
+        float r2 = ratio * ratio;
+        float mag = 1.0f / sqrtf((1.0f - r2) * (1.0f - r2) + r2 / (q * q));
+        int yy = yOf(20.0f * log10f(mag + 1e-6f));
+        int xx = x + 2 + i;
+        if (px >= 0) canvas.glowLine(px, py, xx, yy, LIME, LIME_D);
+        px = xx; py = yy;
+    }
+    int cx = x + 2 + (int)(fc * (float)(w - 5));
+    const EnginePageDef& pg = *enginePage(_synthPage);
+    bool selCut = (pg.first + _row) == cid, selRes = rid != ENGINE_PARAM_NONE && (pg.first + _row) == rid;
+    canvas.dotV(cx, top - 2, bot - top + 2, (selCut || selRes) ? AMBER : AMBER_D, 1, 2);
+    canvas.hline(x + 1, yOf(0.0f), 3, DIM);
+}
+
+// A live oscilloscope: the last output samples, triggered on a rising zero
+// crossing so a held note stands still, drawn as a glowing vector trace.
+void UI::drawScope(int x, int y, int w, int h, uint8_t c) {
+    int16_t buf[256];
+    uint16_t pos = g_scopePos;
+    for (int i = 0; i < 256; i++) buf[i] = g_scope[(pos + i) & 255];
+    int start = 0;
+    for (int i = 1; i < 256 - w; i++) if (buf[i - 1] < 0 && buf[i] >= 0) { start = i; break; }
+    int mid = y + h / 2, px = x, py = mid;
+    canvas.dotH(x, mid, w, GRID, 1, 3);
+    for (int i = 0; i < w && start + i < 256; i++) {
+        int yy = mid - (int)buf[start + i] * (h / 2) / 32768;
+        if (i) canvas.glowLine(px, py, x + i, yy, c, LIME_D);
+        px = x + i; py = yy;
     }
 }
 
@@ -1960,7 +2272,7 @@ void UI::drawPresets() {
 void UI::drawNameCaret(int rowSlot) {
     canvas.setFont(FONT_BODY);
     int x = LIST_R - canvas.textW(_nameBuf) + _nameCursor * 8;
-    canvas.fill(x, CONTENT_Y + rowSlot * ROW_H + 21, 7, 2, LIME);
+    canvas.fill(x, listY() + rowSlot * ROW_H + 19, 7, 2, LIME);
 }
 
 void UI::drawPresetSave() {
@@ -2084,7 +2396,7 @@ void UI::drawSettings() {
         case SetRow::BACKLIGHT:
             snprintf(val, sizeof(val), "%d%%", (int)_gs->contrast * 100 / 255); bar = _gs->contrast / 255.0f; break;
         case SetRow::METRONOME: snprintf(val, sizeof(val), "%s", _gs->metronome ? "ON" : "OFF"); break;
-        case SetRow::CRT:       snprintf(val, sizeof(val), "%s", _gs->crtLines ? "ON" : "OFF"); break;
+        case SetRow::CRT:       snprintf(val, sizeof(val), "%s", CRT_NAMES[_gs->crtLines % Canvas::CRT_MODES]); break;
         case SetRow::PHOSPHOR:  snprintf(val, sizeof(val), "%s", PHOSPHOR_NAMES[_gs->phosphor % NUM_PHOSPHORS]); break;
         case SetRow::TOUCH_CAL: snprintf(val, sizeof(val), "3 POINT"); vc = DIM; break;
         case SetRow::SAVE_ALL:  snprintf(val, sizeof(val), "%s", _store->mounted() ? "" : "NO FS"); break;
@@ -2104,7 +2416,7 @@ void UI::drawUsbMode() {
     canvas.frame(20, 60, W - 40, 110, GRID);
     canvas.frame(23, 63, W - 46, 104, GRID);
     canvas.setFont(FONT_BIG);
-    canvas.textCenter(W / 2, 90, "USB DRIVE", LIME);
+    canvas.textScaled(W / 2 - canvas.textScaledW("USB DRIVE", 2) / 2, 92, "USB DRIVE", LIME, 2);
     canvas.setFont(FONT_BODY);
     canvas.textCenter(W / 2, 112, g_diskMode ? "THE COMPUTER HAS THE DRIVE" : "EJECTED - DRIVE IS BACK",
                       g_diskMode ? AMBER : LIME);
@@ -2126,9 +2438,10 @@ void UI::drawPerf() {
         uint8_t v = _cpuHist[(_cpuHistPos + i) & 63];
         int px = gx + 2 + i * (gw - 4) / 63;
         int py = gy + gh - 3 - v * (gh - 14) / 100;
-        if (prevX >= 0) { canvas.line(prevX, prevY, px, py, LIME); canvas.line(prevX, prevY + 1, px, py + 1, LIME); }
+        if (prevX >= 0) canvas.glowLine(prevX, prevY, px, py, LIME, LIME_D);
         prevX = px; prevY = py;
     }
+
     char buf[32];
     snprintf(buf, sizeof(buf), "%d%%", (int)(g_cpuLoad * 100.0f));
     canvas.setFont(FONT_BOLD);

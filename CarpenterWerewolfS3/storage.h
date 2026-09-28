@@ -50,7 +50,7 @@ struct GlobalSettings {
     // Werewolf S3 panel look (SETTINGS -> PHOSPHOR / CRT LINES). `contrast`
     // above doubles as the TFT backlight level.
     uint8_t  phosphor      = 0;       // Phosphor (ui.h): GREEN / AMBER / BLOOD
-    uint8_t  crtLines      = 1;       // odd-row scanline dimming on/off
+    uint8_t  crtLines      = 2;       // gfx::Canvas::Crt: OFF / LINES / TUBE
 };
 
 // One preset is only meaningful for the engine it was saved under — hence

@@ -77,7 +77,7 @@ public:
 extern const uint8_t* const FONT_SMALL;   // cell numbers, box captions
 extern const uint8_t* const FONT_BODY;    // list rows, status lines
 extern const uint8_t* const FONT_BOLD;    // title box, top bar
-extern const uint8_t* const FONT_BIG;     // value boxes, chain frames
+extern const uint8_t* const FONT_BIG;     // titles, chain frames -- use at 2x
 
 class Canvas {
 public:
@@ -85,8 +85,12 @@ public:
 
     // Palette. RGB888 in, stored as RGB565.
     void setPalette(uint8_t idx, uint32_t rgb);
-    void setCrt(bool on)            { _crt = on; invalidate(); }
-    bool crt() const                { return _crt; }
+    // CRT post-process, applied as bands are sent (the canvas itself stays
+    // clean): OFF, LINES (odd-row scanlines), TUBE (scanlines + vignette +
+    // rounded glass corners).
+    enum Crt : uint8_t { CRT_OFF = 0, CRT_LINES, CRT_TUBE, CRT_MODES };
+    void setCrt(uint8_t mode);
+    uint8_t crt() const             { return _crt; }
     void invalidate();              // force every band out on the next flush
 
     // ── Primitives (all clip to the canvas) ────────────────────────────────
@@ -106,6 +110,12 @@ public:
     // Segment bar: n segments of 2px + 1px gap, `lit` of them in `on`.
     void segBar(int x, int y, int w, int h, float v, uint8_t on, uint8_t off);
     void line(int x0, int y0, int x1, int y1, uint8_t c);
+    // Vector-display line: a 1px core in `c` with a one-pixel phosphor halo
+    // in `halo` around it (drawn first, so crossings keep their bright core).
+    void glowLine(int x0, int y0, int x1, int y1, uint8_t c, uint8_t halo);
+    // Ordered (4x4 Bayer) dither of `c` over whatever is there, t = 0..1
+    // coverage: the "crushed" gradient of a machine with no in-between colours.
+    void dither(int x, int y, int w, int h, float t, uint8_t c);
     void disc(int x, int y, int r, uint8_t c);
     void circle(int x, int y, int r, uint8_t c);
     void xbm(int x, int y, int w, int h, const uint8_t* bits, uint8_t c);
@@ -119,12 +129,16 @@ public:
     int  ascent();
     // Draws as much of `s` as fits in `maxW`, ending with '.' when clipped.
     int  textFit(int x, int y, const char* s, int maxW, uint8_t c);
+    // Pixel-doubled (or more) text: every font pixel becomes an s x s block --
+    // an 8x8 micro font at 2x is the classic chunky title. y is the baseline.
+    int  textScaled(int x, int y, const char* s, uint8_t c, int scale);
+    int  textScaledW(const char* s, int scale) { return textW(s) * scale; }
 
     void flush(Sink& sink);
 
     // Raw access for the host preview.
     const uint8_t* buffer() const  { return _buf; }
-    uint16_t rgb565(uint8_t idx, bool oddRow) const;
+    uint16_t rgb565(uint8_t idx, int x, int y) const;
 
     u8g2_t* u8g2() { return &_u8; }
 
@@ -137,10 +151,16 @@ private:
 #else
     uint8_t  _buf[W * H / 2];
 #endif
-    uint16_t _pal[NUM_COLS];        // RGB565, host order
-    uint16_t _palDim[NUM_COLS];     // the same, darkened for CRT odd rows
+    // Every palette colour at NUM_LEVELS brightnesses, RGB565 host order.
+    // Level 0 is the colour itself; the CRT modes pick a level per pixel.
+    static constexpr int NUM_LEVELS = 8;
+    uint16_t _pal[NUM_LEVELS][NUM_COLS];
+    uint32_t _rgb[NUM_COLS];
     uint32_t _bandHash[NUM_BANDS];
-    bool     _crt = true;
+    uint8_t  _crt = CRT_LINES;
+    uint8_t  _lvlX[W], _lvlY[H];    // vignette, per column / per row
+    uint8_t  level(int x, int y) const;
+    void     buildLevels();
     u8g2_t   _u8;
 };
 

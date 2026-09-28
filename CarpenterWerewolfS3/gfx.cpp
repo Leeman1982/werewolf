@@ -6,23 +6,33 @@ namespace gfx {
 
 Canvas canvas;
 
-// Four sizes, all stock U8g2 bitmap fonts (so no font data lives in this
-// sketch). Chosen by rendering every screen through tools/preview/.
+// Stock U8g2 bitmap fonts (so no font data lives in this sketch). The body
+// face is the Amstrad CPC's own 8x8 ROM font -- the early-80s micro look --
+// and titles are the same face pixel-doubled (Canvas::textScaled).
 const uint8_t* const FONT_SMALL = u8g2_font_5x8_tr;
-const uint8_t* const FONT_BODY  = u8g2_font_8x13_tr;
-const uint8_t* const FONT_BOLD  = u8g2_font_8x13B_tr;
-const uint8_t* const FONT_BIG   = u8g2_font_9x15B_tr;
+const uint8_t* const FONT_BODY  = u8g2_font_amstrad_cpc_extended_8r;
+const uint8_t* const FONT_BOLD  = u8g2_font_amstrad_cpc_extended_8r;
+const uint8_t* const FONT_BIG   = u8g2_font_amstrad_cpc_extended_8r;   // drawn at 2x
 
 // ── U8g2 bridge ─────────────────────────────────────────────────────────────
 // U8g2 renders everything through one low-level "draw a horizontal or
 // vertical run" callback. Pointing that at the canvas, in whatever palette
 // colour is current, is the entire bridge.
 static uint8_t s_col = TEXT;
+// Scaled text: u8g2 draws at (s_ox, s_oy) and every run is stretched about
+// that origin by s_scale.
+static int s_scale = 1, s_ox = 0, s_oy = 0, s_tx = 0, s_ty = 0;
 
 static void llHvline(u8g2_t* u8g2, u8g2_uint_t x, u8g2_uint_t y, u8g2_uint_t len, uint8_t dir) {
     (void)u8g2;
-    if (dir == 0) canvas.hline((int)x, (int)y, (int)len, s_col);
-    else          canvas.vline((int)x, (int)y, (int)len, s_col);
+    if (s_scale == 1) {
+        if (dir == 0) canvas.hline((int)x, (int)y, (int)len, s_col);
+        else          canvas.vline((int)x, (int)y, (int)len, s_col);
+        return;
+    }
+    int sx = s_tx + ((int)x - s_ox) * s_scale, sy = s_ty + ((int)y - s_oy) * s_scale;
+    if (dir == 0) canvas.fill(sx, sy, (int)len * s_scale, s_scale, s_col);
+    else          canvas.fill(sx, sy, s_scale, (int)len * s_scale, s_col);
 }
 
 // A 320x240 "display" with no bus behind it: only the geometry matters.
@@ -58,25 +68,70 @@ void Canvas::begin() {
     u8g2_SetDrawColor(&_u8, 1);
     u8g2_SetFontPosBaseline(&_u8);
     u8g2_SetFont(&_u8, FONT_BODY);
+    buildLevels();
     clear(BG);
     invalidate();
 }
 
+// Brightness of each level, in percent. Level 2 is the scanline: 76%, the
+// exact ratio between each lit colour and its scanline partner on the
+// NightShift reference screens (#ACF26A over #83B652, #CDE2B4 over #9CAA8B).
+// The rest are the vignette's fall-off toward the tube's edges and corners;
+// level 7 is the black outside the rounded glass.
+static const uint8_t LEVEL_PCT[8] = { 100, 88, 76, 66, 56, 44, 30, 0 };
+
 void Canvas::setPalette(uint8_t idx, uint32_t rgb) {
     if (idx >= NUM_COLS) return;
-    uint8_t r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
-    _pal[idx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
-    // CRT odd rows at 76% -- the exact ratio between each lit colour and its
-    // scanline partner on the NightShift reference screens (#ACF26A over
-    // #83B652, #CDE2B4 over #9CAA8B).
-    r = (uint8_t)(r * 76 / 100); g = (uint8_t)(g * 76 / 100); b = (uint8_t)(b * 76 / 100);
-    _palDim[idx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    _rgb[idx] = rgb;
+    for (int l = 0; l < NUM_LEVELS; l++) {
+        uint32_t r = ((rgb >> 16) & 0xFF) * LEVEL_PCT[l] / 100;
+        uint32_t g = ((rgb >> 8) & 0xFF) * LEVEL_PCT[l] / 100;
+        uint32_t b = (rgb & 0xFF) * LEVEL_PCT[l] / 100;
+        _pal[l][idx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+    }
     invalidate();
 }
 
-uint16_t Canvas::rgb565(uint8_t idx, bool oddRow) const {
-    idx &= 0x0F;
-    return (_crt && oddRow) ? _palDim[idx] : _pal[idx];
+void Canvas::setCrt(uint8_t mode) {
+    _crt = (mode < CRT_MODES) ? mode : (uint8_t)CRT_LINES;
+    buildLevels();
+    invalidate();
+}
+
+// The tube: brightness falls away over the outer ~40 px, a little faster
+// top and bottom than at the sides (a 4:3 tube's curvature), and the corners
+// are rounded off to black with a 14 px radius.
+void Canvas::buildLevels() {
+    for (int x = 0; x < W; x++) {
+        int d = x < W - 1 - x ? x : W - 1 - x;
+        _lvlX[x] = (uint8_t)(d < 4 ? 3 : d < 12 ? 2 : d < 30 ? 1 : 0);
+    }
+    for (int y = 0; y < H; y++) {
+        int d = y < H - 1 - y ? y : H - 1 - y;
+        _lvlY[y] = (uint8_t)(d < 3 ? 3 : d < 10 ? 2 : d < 24 ? 1 : 0);
+    }
+}
+
+uint8_t Canvas::level(int x, int y) const {
+    if (_crt == CRT_OFF) return 0;
+    int l = (y & 1) ? 2 : 0;                      // scanline
+    if (_crt == CRT_TUBE) {
+        l += _lvlX[x] + _lvlY[y];
+        // Rounded corners.
+        const int R = 14;
+        int cx = x < R ? R - x : (x >= W - R ? x - (W - 1 - R) : 0);
+        int cy = y < R ? R - y : (y >= H - R ? y - (H - 1 - R) : 0);
+        if (cx && cy) {
+            int d2 = cx * cx + cy * cy;
+            if (d2 > R * R) return 7;
+            if (d2 > (R - 2) * (R - 2)) l += 2;
+        }
+    }
+    return (uint8_t)(l > 7 ? 7 : l);
+}
+
+uint16_t Canvas::rgb565(uint8_t idx, int x, int y) const {
+    return _pal[level(x, y)][idx & 0x0F];
 }
 
 void Canvas::invalidate() {
@@ -183,6 +238,23 @@ void Canvas::line(int x0, int y0, int x1, int y1, uint8_t c) {
     }
 }
 
+void Canvas::glowLine(int x0, int y0, int x1, int y1, uint8_t c, uint8_t halo) {
+    // Halo: the same line shifted one pixel each way. Cheap, and on a
+    // 320x240 panel it reads as the bloom of a vector display's beam.
+    line(x0 - 1, y0, x1 - 1, y1, halo); line(x0 + 1, y0, x1 + 1, y1, halo);
+    line(x0, y0 - 1, x1, y1 - 1, halo); line(x0, y0 + 1, x1, y1 + 1, halo);
+    line(x0, y0, x1, y1, c);
+}
+
+void Canvas::dither(int x, int y, int w, int h, float t, uint8_t c) {
+    static const uint8_t BAYER[4][4] = { { 0, 8, 2, 10 }, { 12, 4, 14, 6 },
+                                         { 3, 11, 1, 9 }, { 15, 7, 13, 5 } };
+    int th = (int)(t * 16.0f + 0.5f);
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++)
+            if (BAYER[(y + j) & 3][(x + i) & 3] < th) pixel(x + i, y + j, c);
+}
+
 void Canvas::disc(int x, int y, int r, uint8_t c) {
     if (x < 0 || y < 0) return;
     s_col = c; u8g2_DrawDisc(&_u8, (u8g2_uint_t)x, (u8g2_uint_t)y, (u8g2_uint_t)r, U8G2_DRAW_ALL);
@@ -212,6 +284,20 @@ int Canvas::text(int x, int y, const char* s, uint8_t c) {
     if (x < 0 || y < 0) return x;       // u8g2 coordinates are unsigned
     s_col = c;
     return x + (int)u8g2_DrawStr(&_u8, (u8g2_uint_t)x, (u8g2_uint_t)y, s);
+}
+
+int Canvas::textScaled(int x, int y, const char* s, uint8_t c, int scale) {
+    if (!s || !*s) return x;
+    if (scale <= 1) return text(x, y, s, c);
+    // u8g2 draws at a fixed, safely on-canvas origin (its coordinates are
+    // unsigned and clip at the edge); the callback maps a font pixel at
+    // (ox + dx, oy + dy) to (x + dx*scale, y + dy*scale).
+    const int ox = 0, oy = 40;
+    s_ox = ox; s_oy = oy; s_tx = x; s_ty = y; s_scale = scale;
+    s_col = c;
+    int w = (int)u8g2_DrawStr(&_u8, (u8g2_uint_t)ox, (u8g2_uint_t)oy, s);
+    s_scale = 1;
+    return x + w * scale;
 }
 
 int Canvas::textRight(int xr, int y, const char* s, uint8_t c) {
@@ -252,17 +338,24 @@ void Canvas::flush(Sink& sink) {
         uint32_t h = fnv1a(src, bandBytes);
         if (h == _bandHash[b]) continue;
         _bandHash[b] = h;
-        // Expand 4bpp -> RGB565, big-endian (the order an ILI9341 wants on
-        // the wire, so the SPI driver can send the buffer untouched).
+        // Expand 4bpp -> RGB565 at each pixel's CRT brightness level,
+        // big-endian (the order an ILI9341 wants on the wire, so the SPI
+        // driver can send the buffer untouched).
+        const bool tube = (_crt == CRT_TUBE);
         for (int row = 0; row < BAND_H; row++) {
-            bool odd = ((b * BAND_H + row) & 1) != 0;
-            const uint16_t* pal = (_crt && odd) ? _palDim : _pal;
+            int y = b * BAND_H + row;
             const uint8_t* s = src + row * (W / 2);
             uint16_t* d = &px[row * W];
-            for (int i = 0; i < W / 2; i++) {
-                uint16_t lo = pal[s[i] & 0x0F], hi = pal[s[i] >> 4];
-                d[2 * i]     = (uint16_t)((lo >> 8) | (lo << 8));
-                d[2 * i + 1] = (uint16_t)((hi >> 8) | (hi << 8));
+            const bool corners = tube && (y < 14 || y >= H - 14);
+            const int rowL = (_crt == CRT_OFF) ? 0 : ((y & 1) ? 2 : 0) + (tube ? _lvlY[y] : 0);
+            for (int x = 0; x < W; x++) {
+                uint8_t idx = (x & 1) ? (s[x >> 1] >> 4) : (s[x >> 1] & 0x0F);
+                int l;
+                if (corners)   l = level(x, y);
+                else if (tube) { l = rowL + _lvlX[x]; if (l > 7) l = 7; }
+                else           l = rowL;
+                uint16_t c = _pal[l][idx];
+                d[x] = (uint16_t)((c >> 8) | (c << 8));
             }
         }
         sink.pushRect(0, b * BAND_H, W, BAND_H, px);
